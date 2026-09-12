@@ -1,0 +1,106 @@
+# ============================================================
+# MedPal 1.1 —— 项目级 .gitignore
+# 用途：忽略密钥、运行时数据、依赖与构建产物，防止敏感信息入库。
+# 生成背景：审计发现 .env* 配置文件（含生产 SECRET_KEY / 弱口令）处于
+#           "未跟踪且未被忽略"状态，根因为缺失 .gitignore，特此补全。
+# ============================================================
+
+# ---------- 1. 环境变量 / 密钥（最高优先级，禁止入库） ----------
+# 覆盖 .env、.env.本地测试、.env.阿里云部署 等所有变体（含中文命名）
+.env
+.env.*
+# 脱敏模板 .env.example 允许入库（不包含任何真实密钥）
+!.env.example
+
+# ---------- 2. 运行时数据目录（由程序自动生成，禁止入库） ----------
+data/
+# SQLite 数据库及其 WAL/SHM 文件
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ---------- 3. 日志与临时导出 ----------
+*.log
+logs/
+temp_exports/
+
+# ---------- 4. Python（后端 FastAPI） ----------
+# [说明 2026-09-11] 本节均为「运行/构建时本地生成」的缓存与中间产物：
+#   - 删除后不影响系统运行，重新运行程序会自动重新生成；
+#   - 严禁提交入库；若误入库请执行 git rm -r --cached <路径> 后再提交。
+# Python 字节码缓存（pip / uvicorn 运行时自动生成，可随时整目录删除）
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+# 测试 / 覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# ---------- 5. Node / 前端（React + Vite） ----------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
+.pnp.*
+.yarn/
+
+# ---------- 6. 构建 / 发布产物 ----------
+*.tar
+*.tar.gz
+*.zip
+*.tgz
+*.whl
+*.rpm
+*.deb
+
+# ---------- 7. 本地 IDE / 工具数据（含 CodeBuddy 项目数据，非源码） ----------
+.codebuddy/
+
+# ---------- 8. 编辑器 / IDE / 操作系统 ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 8. 其他 ----------
+*.bak
+*.tmp
+*.temp
+~$*

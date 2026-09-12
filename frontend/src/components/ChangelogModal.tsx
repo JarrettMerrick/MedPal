@@ -1,0 +1,137 @@
+// Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+// Licensed under the MIT License. See LICENSE file for details.
+
+/**
+ * 业务背景说明
+ * ============
+ * 版本更新记录弹窗组件：
+ * 1. 由侧边栏左下角「版本号」点击触发，展示系统版本更新历史
+ * 2. 版本历史以数据数组（VERSION_HISTORY）维护，新增版本时在数组头部追加即可
+ * 3. 内容为纯静态数据，无网络请求，内网可用
+ *
+ * 改造说明（v1.1.0）：
+ * - [改进] 新增组件，替代原先不可点击的纯文本版本号
+ */
+
+import React from 'react';
+import { Modal, Typography, Tag } from 'antd';
+import { ClockCircleOutlined } from '@ant-design/icons';
+
+const { Text } = Typography;
+
+/** 单个版本更新记录的数据结构 */
+interface ChangelogEntry {
+  /** 版本号，如 v1.1.0 */
+  version: string;
+  /** 发布日期，格式 YYYY-MM-DD */
+  date: string;
+  /** 版本代号 / 主题说明 */
+  codename: string;
+  /** 更新内容列表（每项一条） */
+  changes: string[];
+}
+
+/**
+ * 版本更新历史（按时间倒序，最新版本在最前）
+ * [改进] 数据集中维护，新增发版时在此追加，无需改动组件渲染逻辑
+ */
+const VERSION_HISTORY: ChangelogEntry[] = [
+  {
+    version: 'v1.2.0',
+    date: '2026-09-09',
+    codename: '标识管理增强 + 维修记录体系 + 标识总览 + 富文本升级',
+    changes: [
+      '【编码/筛选/详情】新增标识自动编号规则（院区-分类-楼栋-楼层-序号）；列表支持院区/楼栋/楼层三级级联筛选；详情页补全位置、尺寸、安装时间、有效期与最近巡检信息。',
+      '【标识巡检】提交巡检可拍照上传现场照片（客户端压缩，也可跳过不传），巡检详情可查看现场照片。',
+      '【导入导出】重写：按条件筛选导出 Excel/CSV；批量导出设计文件、现场照片与二维码压缩包（含清单）；支持模板下载与 xlsx 批量导入（编码留空自动生成、逐行校验）。',
+      '【维修与版本记录分离】维修前照片自动取自巡检照片；维修不再写入历史版本；详情页新增「维修记录」（前后照片对比，缺图提示"暂无现场照片"）与「版本更新」按钮——仅「版本更新」的修改才生成历史版本，普通编辑不记录。',
+      '【标识总览】点击「标识平面」进入总览页：KPI 指标卡、状态/分类/院区/楼栋分布图、维修概况、巡检趋势（可自定义区间，最长 90 天）、最近动态，60 秒自动刷新。',
+      '【维修记录菜单】「标识标记」下方新增「维修记录」：查看全部标识维修记录，支持按标识、日期范围、维修部门、状态筛选；导出前确认范围，可导出 Excel/CSV。',
+      '【权限】新增 signage.repair（维修记录查看/导出），有「标识预警」权限的角色升级时自动补授。',
+      '【枚举中文化】状态、变更字段名与旧新值、有效期类型统一显示中文；修复「维修处理中」显示英文原值、历史快照误显示为「已拆除」等问题；统一「严重损坏」文案。',
+      '【标识标记优化】底图自适应画板并居中（一屏完整可见）；标记开关与缩放控件改为随地图悬浮的工具栏；记号（圆/方/三角/菱形/星形/消防栓）保持固定屏幕尺寸，不随缩放变大变小。',
+      '【富文本升级】通知公告与制度牌编辑器新增「可视化/源码/预览」三模式（双向同步）；粘贴保留内联样式并自动安全过滤（白名单、禁危险标签与事件属性）；编辑预览与发布后展示一致；自适应布局无横向滚动。',
+      '【修复与优化】设计文件与照片改为非必填；标识设置移入系统分组；删除标识/平面图即时清理物理文件；修复丢失图片导致页面不断刷新、附件导出接口 500、SVG 平面图不铺满、分类列表 422 等问题。',
+    ],
+  },
+  {
+    version: 'v1.1.1',
+    date: '2026-09-03',
+    codename: '图片导出优化 + 数据核对 + 混合科室 + 照片批量导入',
+    changes: [
+      '【图片导出】打包目录扁平化，可按类型（正面照/侧面照/卡片照）筛选；文件名统一为 工号_类型.ext，可直接重新导入。',
+      '【照片批量导入】支持 ZIP 一次性导入多人多张照片，自动按工种存入对应目录。',
+      '【新增】数据核对：一键筛选信息不完整的医生/护士/技师；混合科室配置（科室可容纳多工种）。',
+      '【修复】照片/卡片上传后通知笼统显示"更新操作"改为提示具体更新项；图片打包 ZIP 为空（混合科室护士被过滤排除）；StaffVerifyResponse 导入缺失导致后端启动崩溃。',
+      '【部署加固】关闭 NFS 网络卷上的 SQLite WAL 模式，规避数据损坏风险。',
+    ],
+  },
+  {
+    version: 'v1.1.0',
+    date: '2026-08-07',
+    codename: 'UI 全面升级 + 稳定性修复 + 安全加固 + 功能增强',
+    changes: [
+      '前端 UI 全面迁移至 Ant Design 5.x，统一主题与交互规范；照片资料改为左右两栏，未上传/丢失统一占位提示。',
+      '【图片】CMYK 自动转 RGB；缩略图提升至 1000px；上传保留原图格式与透明度（不再自动加白底），无后缀文件按魔数检测类型。',
+      '【制度】类别新增 3 位代码（支持编辑/删除），版本号自动生成（V01_代码_日期），历史版本记录内容快照（超 3 年自动清理）。',
+      '【用户】新增账号默认不同步人员管理（可手动勾选），工号限 6 位数字。',
+      '【数据】科室/人员/制度导入导出模板与字段同步更新；修复科室图片备注二次编辑与下载命名（按"名称-备注"）。',
+      '【安全】修复部门图片上传崩溃、越权编辑、路径穿越、导入校验等问题；登录/改密增加密码长度限制（修复密码超长崩溃漏洞）；写操作增加权限守卫；富文本图片改为上传服务器存储。',
+      '【运维】令牌过期自动刷新（不再误报"文件已丢失"）；日志自动轮转；磁盘/数据库告警通知管理员；备份按天去重、孤儿图片每日清理。',
+    ],
+  },
+];
+
+interface Props {
+  /** 弹窗是否可见 */
+  open: boolean;
+  /** 关闭回调 */
+  onClose: () => void;
+}
+
+const ChangelogModal: React.FC<Props> = ({ open, onClose }) => {
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      centered
+      width={520}
+      title={
+        <Text strong style={{ fontSize: 16 }}>
+          版本更新记录
+        </Text>
+      }
+    >
+      {/* 按版本倒序遍历，逐版本渲染 */}
+      {VERSION_HISTORY.map((entry) => (
+        <div key={entry.version} style={{ marginBottom: 16 }}>
+          {/* 版本头部：版本号 + 代号 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Tag color="blue" style={{ fontSize: 14, lineHeight: '22px', marginRight: 0 }}>
+              {entry.version}
+            </Tag>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              {entry.codename}
+            </Text>
+          </div>
+
+          {/* 发布日期 */}
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>
+            <ClockCircleOutlined style={{ marginRight: 4 }} />
+            发布日期：{entry.date}
+          </div>
+
+          {/* 更新内容列表 */}
+          <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8, fontSize: 13, color: '#333' }}>
+            {entry.changes.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </Modal>
+  );
+};
+
+export default ChangelogModal;

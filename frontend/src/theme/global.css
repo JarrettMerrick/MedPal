@@ -1,0 +1,89 @@
+/* Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com) */
+/* Licensed under the MIT License. See LICENSE file for details. */
+
+/**
+ * 全局样式覆盖
+ * ============
+ * 保留 Tailwind 工具类（flex/grid/spacing），补充 Ant Design 组件的微调样式。
+ * 注：Tailwind 用于页面级布局和响应式断点，Ant Design 负责组件内部样式。
+ */
+
+/* Ant Design 全局微调 */
+.ant-layout {
+  min-height: 100vh;
+}
+
+.ant-table-wrapper {
+  overflow-x: auto;
+}
+
+/* [改进] 浅色侧边栏：去除 Sider 默认深色背景，保持纯白 + 细边框 */
+.ant-layout-sider {
+  background: #ffffff !important;
+  border-right: 1px solid #edf0f3;
+}
+
+/* [改进] 侧边栏菜单选中态：左侧 3px 医疗青蓝竖条（仅在非折叠态显示） */
+.ant-menu-inline .ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 2px 2px 0;
+  background: #0e7f8a;
+}
+
+/* [修复 2026-09-07] 含选中子项的父级子菜单标题（如「标识平面」「标识设置」）：
+   与叶子选中态一致的浅绿底纹（colorPrimaryBg）+ 左侧青蓝竖条，保证视觉一致 */
+.ant-menu-inline .ant-menu-submenu-selected > .ant-menu-submenu-title {
+  position: relative;
+  background-color: #e3f4f6;
+  color: #0e7f8a;
+}
+.ant-menu-inline .ant-menu-submenu-selected > .ant-menu-submenu-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 2px 2px 0;
+  background: #0e7f8a;
+}
+
+/* [改进] 分组标题与菜单项之间的留白更舒展 */
+.ant-menu-item-group-title {
+  padding: 16px 16px 6px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* [改进] 卡片浮起效果 — 三层深色阴影 + 微上浮，低调内敛 */
+.ant-card-hoverable {
+  transition: transform 0.3s cubic-bezier(0.23, 1, 0.32, 1),
+              box-shadow 0.3s cubic-bezier(0.23, 1, 0.32, 1),
+              border-color 0.25s ease,
+              background-color 0.3s ease;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+}
+.ant-card-hoverable:hover {
+  transform: translateY(-4px);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.02),
+    0 4px 8px rgba(0, 0, 0, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.08);
+  background-color: #fafbfc;
+}
+
+/* 响应式 - 小屏幕表格字号缩小 */
+@media (max-width: 768px) {
+  .ant-table {
+    font-size: 12px;
+  }
+}

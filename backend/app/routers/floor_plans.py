@@ -1,0 +1,284 @@
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Request
+from sqlalchemy.orm import Session
+from app.database import get_db
+# [修复 2026-09-07] 平面图底图管理用 signage.floorplan（标识设置 - 平面设置）；
+# 标识点位增删用 signage.marker（标识平面 - 标识标记）
+from app.dependencies import get_current_user, has_permission, require_any_permission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_FLOORPLAN, PERM_SIGNAGE_MARKER
+from app.models.user import User
+from app.schemas.signage import FloorPlanCreate, FloorPlanResponse, FloorPlanListResponse, SignagePointCreate, SignagePointResponse, SignagePointListResponse
+from app.services.signage_service import create_floor_plan, get_floor_plan, get_floor_plan_list, create_signage_point, get_signage_points, delete_signage_point, get_point_by_signage, get_signage
+from app.services.upload_service import delete_file
+from app.services.upload_service import save_upload_file, UPLOAD_ROOT
+# [新增 2026-09-09] 平面图/点位写操作审计留痕 + 统一 IP 获取
+from app.services.audit_service import record_audit
+from app.utils import get_client_ip
+import os
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/floor-plans", tags=["平面图管理"])
+
+
+@router.get("")
+def list_floor_plans(
+    campus: str | None = Query(None),
+    building: str | None = Query(None),
+    # [修复 2026-09-05] 新增平面类别过滤（院区平面/楼层平面）
+    category: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 获取平面图列表"""
+    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
+        raise HTTPException(status_code=403, detail="权限不足")
+    return get_floor_plan_list(db, campus, building, category)
+
+
+@router.post("", response_model=FloorPlanResponse, status_code=201)
+def create_floor_plan_endpoint(
+    data: FloorPlanCreate,
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_FLOORPLAN)),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 创建平面图"""
+    p = create_floor_plan(db, data.model_dump())
+    db.commit()
+    # [新增 2026-09-09] 平面图创建审计留痕
+    try:
+        record_audit(db, "floorplan_create", current_user.employee_id,
+                     detail=f"campus={p.campus}, building={p.building}, floor={p.floor}", target=str(p.id),
+                     ip_address=get_client_ip(request))
+        db.commit()
+    except Exception: pass
+    return p
+
+
+@router.get("/{plan_id}", response_model=FloorPlanResponse)
+def get_floor_plan_endpoint(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 获取平面图详情"""
+    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
+        raise HTTPException(status_code=403, detail="权限不足")
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+    return p
+
+
+@router.delete("/{plan_id}")
+def delete_floor_plan_endpoint(
+    plan_id: int,
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_FLOORPLAN)),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 删除平面图"""
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+    # [修复 2026-09-07] 删除平面图时同步清理图片物理文件（含 thumb_/orig_ 副本），避免孤儿文件
+    if p.image_url:
+        delete_file(p.image_url)
+    db.delete(p)
+    db.commit()
+    # [新增 2026-09-09] 平面图删除审计留痕
+    try:
+        record_audit(db, "floorplan_delete", current_user.employee_id,
+                     detail=f"plan_id={plan_id}", target=str(plan_id),
+                     ip_address=get_client_ip(request))
+        db.commit()
+    except Exception: pass
+    return {"message": "删除成功"}
+
+
+@router.post("/{plan_id}/points", response_model=SignagePointResponse, status_code=201)
+def create_point_endpoint(
+    plan_id: int,
+    data: SignagePointCreate,
+    # [修复 2026-09-05] 重新绑定时豁免旧点位的重复校验（前端先建新、后删旧，避免失败丢标记）
+    exclude_point_id: int | None = Query(None),
+    # [修复 2026-09-07] 点位创建属「标识标记」权限（signage.marker）
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_MARKER)),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 创建标识点位"""
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+    # [修复 2026-09-05] 每个标识全局仅可被标记一次
+    if get_point_by_signage(db, data.signage_id, exclude_point_id):
+        raise HTTPException(status_code=400, detail="该标识已被标记，不能重复标记")
+    data.floor_plan_id = plan_id
+    point = create_signage_point(db, data.model_dump())
+    db.commit()
+    # [新增 2026-09-09] 标识点位创建审计留痕
+    try:
+        record_audit(db, "marker_create", current_user.employee_id,
+                     detail=f"plan_id={plan_id}, signage_id={data.signage_id}", target=str(point.id),
+                     ip_address=get_client_ip(request))
+        db.commit()
+    except Exception: pass
+    # [修复 2026-09-05] 响应附带标识信息，保证新标记点立即按分类样式渲染
+    sg = get_signage(db, data.signage_id)
+    return SignagePointResponse(
+        id=point.id,
+        signage_id=point.signage_id,
+        floor_plan_id=point.floor_plan_id,
+        x_percent=point.x_percent,
+        y_percent=point.y_percent,
+        pin_icon=point.pin_icon,
+        pin_color=point.pin_color,
+        signage_category=sg.category if sg else None,
+        signage_code=sg.code if sg else None,
+        signage_name=sg.name if sg else None,
+    )
+
+
+@router.get("/{plan_id}/points")
+def list_points_endpoint(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 获取平面图的所有标识点位"""
+    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
+        raise HTTPException(status_code=403, detail="权限不足")
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+    pts = get_signage_points(db, plan_id)
+    # [修复 2026-09-05] 附带标识编码/名称/分类：标记点按「分类形状+颜色」渲染，
+    # 不能依赖前端绑定弹窗的分页标识列表（已被 exclude_marked 过滤，查不到已标记的标识）
+    out = []
+    for pt in pts:
+        sg = get_signage(db, pt.signage_id)
+        out.append({
+            "id": pt.id,
+            "signage_id": pt.signage_id,
+            "floor_plan_id": pt.floor_plan_id,
+            "x_percent": pt.x_percent,
+            "y_percent": pt.y_percent,
+            "pin_icon": pt.pin_icon,
+            "pin_color": pt.pin_color,
+            "signage_category": sg.category if sg else None,
+            "signage_code": sg.code if sg else None,
+            "signage_name": sg.name if sg else None,
+        })
+    return out
+
+
+@router.delete("/points/{point_id}")
+def delete_point_endpoint(
+    point_id: int,
+    # [修复 2026-09-07] 点位删除属「标识标记」权限（signage.marker）
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_MARKER)),
+    db: Session = Depends(get_db),
+):
+    """[新增 2026-09-03] 删除标识点位"""
+    success = delete_signage_point(db, point_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="点位不存在")
+    db.commit()
+    # [新增 2026-09-09] 点位删除审计留痕
+    try:
+        record_audit(db, "marker_delete", current_user.employee_id,
+                     detail=f"point_id={point_id}", target=str(point_id),
+                     ip_address=get_client_ip(request))
+        db.commit()
+    except Exception: pass
+    return {"message": "删除成功"}
+
+
+@router.post("/{plan_id}/upload", response_model=FloorPlanResponse)
+async def upload_floor_plan_image(
+    plan_id: int,
+    file: UploadFile = File(...),
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_FLOORPLAN)),
+    db: Session = Depends(get_db),
+):
+    """[修复 2026-09-03] 上传平面图图片"""
+    # 检查平面图是否存在
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+    
+    # 保存上传的图片
+    try:
+        # 使用现有的上传服务保存图片
+        # entity_type使用"floor_plan"，entity_id使用平面图ID
+        image_url = await save_upload_file(
+            file=file,
+            entity_type="floor_plan",
+            entity_id=str(plan_id),
+            photo_type="image",
+            min_width=400,
+            min_height=300,
+            # [修复 2026-09-05] 平面图支持上传 SVG 矢量图
+            allow_svg=True
+        )
+
+        # [修复 2026-09-07] 重复上传时清理旧图片物理文件（每次上传生成新文件名，旧图不再被引用）
+        if p.image_url:
+            delete_file(p.image_url)
+
+        # 更新平面图的image_url字段
+        p.image_url = image_url
+        db.commit()
+        db.refresh(p)
+        
+        # [新增 2026-09-09] 平面图图片上传审计留痕
+        try:
+            record_audit(db, "floorplan_upload", current_user.employee_id,
+                         detail=f"plan_id={plan_id}, file={file.filename}", target=str(plan_id),
+                         ip_address=get_client_ip(request))
+            db.commit()
+        except Exception: pass
+
+        return p
+    except Exception as e:
+        # [新增 2026-09-09] 平面图图片上传失败记入运行日志（ERROR），根因可查
+        logger.error(f"上传平面图图片失败: plan_id={plan_id}, {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+
+
+@router.put("/{plan_id}/image", response_model=FloorPlanResponse)
+async def update_floor_plan_image(
+    plan_id: int,
+    data: FloorPlanCreate,
+    request: Request = None,
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_FLOORPLAN)),
+    db: Session = Depends(get_db),
+):
+    """[修复 2026-09-03] 更新平面图信息（包括image_url）"""
+    p = get_floor_plan(db, plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="平面图不存在")
+
+    # [修复 2026-09-07] 记录旧图路径：若本次更新替换了 image_url，清理旧图片物理文件，避免孤儿残留
+    old_image_url = p.image_url
+
+    # 更新平面图信息
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(p, key, value)
+
+    if old_image_url and p.image_url != old_image_url:
+        delete_file(old_image_url)
+    
+    db.commit()
+    db.refresh(p)
+    # [新增 2026-09-09] 平面图更新审计留痕
+    try:
+        record_audit(db, "floorplan_update", current_user.employee_id,
+                     detail=f"plan_id={plan_id}, image_changed={bool(old_image_url and p.image_url != old_image_url)}",
+                     target=str(plan_id), ip_address=get_client_ip(request))
+        db.commit()
+    except Exception: pass
+    return p

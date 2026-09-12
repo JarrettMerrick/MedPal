@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+    background-color: #F6F8FA;
+    color: #1F2D3D;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* [改进] 数字使用等宽字形，表格/统计数字对齐更专业 */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  input:focus {
+    outline: none;
+  }
+}
