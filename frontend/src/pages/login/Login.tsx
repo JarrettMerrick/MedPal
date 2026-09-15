@@ -74,8 +74,11 @@ const Login: React.FC = () => {
 
   return (
     /* Tailwind 蓝色渐变背景保留用于装饰 */
-    <div className="min-h-screen bg-gradient-to-br from-[#0E7F8A] via-[#1B8E99] to-[#9AD0D6] flex items-center justify-center">
-      <div style={{ width: '100%', maxWidth: 420, padding: '0 16px' }}>
+    <div className="min-h-screen bg-gradient-to-br from-[#0E7F8A] via-[#1B8E99] to-[#9AD0D6] flex flex-col">
+      {/* [调整 2026-09-12] 由「水平垂直居中」改为「flex-col + margin:auto」：
+          品牌区与登录卡片仍居中，同时为底部宣传标语腾出位置；
+          内容高于一屏时 margin:auto 自动归零，页脚随内容下移，不会遮挡卡片 */}
+      <div style={{ width: '100%', maxWidth: 420, padding: '0 16px', margin: 'auto' }}>
         {/* Logo & 标题：[新增 2026-09-10] 展示 Logo + 单位名称 + 系统名称 + 单位名称（英） */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           {/* [调整 2026-09-10] 显示框高度固定 64px，宽度随 Logo 原始比例伸缩 */}
@@ -192,6 +195,25 @@ const Login: React.FC = () => {
           </div>
         </Card>
       </div>
+
+      {/* [新增 2026-09-12] 宣传标语：固定贴浏览器窗口底部（决策 2 方案 B）。
+          采用正常文档流而非 position:fixed —— 内容高于一屏时会自然下移，
+          既保持「贴底」观感，又不会像 fixed 那样在小高度窗口下覆盖登录卡片。
+          未配置或管理员主动清空时整块不渲染 */}
+      {branding.slogan && (
+        <div style={{ padding: '0 16px 24px', textAlign: 'center', flexShrink: 0 }}>
+          <Text
+            style={{
+              color: token.colorTextLightSolid,
+              fontSize: token.fontSizeSM,
+              opacity: 0.85,
+              letterSpacing: 0.3,
+            }}
+          >
+            {branding.slogan}
+          </Text>
+        </div>
+      )}
     </div>
   );
 };

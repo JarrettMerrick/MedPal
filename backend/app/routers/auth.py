@@ -24,6 +24,8 @@ from app.schemas.auth import (
 from app.schemas.user import ProfileUpdate, UserResponse
 from app.services.auth_service import authenticate_user, change_password, blacklist_token, is_token_revoked
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：本人改密后发「账号安全」回执（账号被盗用改密的感知手段）
+from app.services.modification_notify import notify_super_admins
 # [新增 2026-09-11] 个人中心自助修改纳入「立即生效 + 追认审核」，
 # 避免个人中心成为绕过人员信息审核的后门（详见 staff_change_service）
 from app.models.staff_change import SOURCE_SELF
@@ -364,6 +366,33 @@ def change_user_password(
     try:
         record_audit(db, "password_change", current_user.employee_id,
                      detail=f"ip={client_ip}", target=current_user.employee_id, ip_address=client_ip)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # [新增 2026-09-15] 本人改密后发「账号安全」回执（事件：个人账号安全设置变更）：
+    # 目的是让账号主人拿到一条明确记录——若密码并非本人所改（账号被盗用后改密夺权），
+    # 可在收件箱立刻发现异常，而不是等到下次登录失败才察觉。
+    # 该事件声明 keep_actor=True 且 default_recipients_mode=explicit，
+    # 因此显式传入本人工号作为收件人（管理员改为自定义收件人规则时以其配置为准）。
+    try:
+        notify_super_admins(
+            db,
+            title="密码已修改",
+            content=(
+                f"您的账号（{current_user.name}）登录密码刚刚修改成功，"
+                f"如非本人操作请立即联系超级管理员"
+            ),
+            related_type="user",
+            recipients=[current_user.employee_id],
+            event_code="account.security_changed",
+            context={
+                "操作人": current_user.name,
+                "姓名": current_user.name,
+                "工号": current_user.employee_id,
+                "变更内容": "登录密码已修改",
+            },
+        )
         db.commit()
     except Exception:
         db.rollback()

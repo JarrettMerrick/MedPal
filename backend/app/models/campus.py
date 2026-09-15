@@ -5,7 +5,8 @@
 院区-楼栋-楼层-区域 信息维护模块
 
 层级关系：院区 → 楼栋 → 楼层 → 区域
-每个楼层可维护东、西两个区域或者合并为一个区域
+[调整 2026-09-12] 每个楼层可自由划分并绑定**多个**区域（例如东区可关联多个区域），
+不再限制「一个楼层只能有一个区域」；area_type（east/west/merged）仅作为分类标签。
 """
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, Boolean

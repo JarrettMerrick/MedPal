@@ -13,6 +13,12 @@
     - 收件人规则由业务方传入 department（被修改人员所在科室）决定。
 
 消息落库为站内信（msg_type=system），可在站内信收件箱中查看、标注与归档。
+
+[调整 2026-09-15] 接入可配置通知中心（系统设置 → 通知设置）：
+调用点通过 event_code + context 声明「这属于哪个业务事件、文案里的变量是什么」，
+实际文案与收件人由 `notification_center.emit` 按管理员配置决定；未配置时使用
+注册表默认模板（= 本模块改造前的原文案）与 `resolve_modification_recipients`
+的默认收件人，行为与改造前逐字一致。未传 event_code 的旧调用保持原样直发。
 """
 
 from sqlalchemy.orm import Session
@@ -44,17 +50,51 @@ def notify_super_admins(
     db: Session, title: str, content: str,
     related_type: str = None, related_id: int = None,
     department: str | None = None, exclude_user_id: str | None = None,
+    event_code: str | None = None, context: dict | None = None,
+    exclude_ids: list[str] | None = None,
+    recipients: list[str] | None = None,
 ) -> int:
     """发送「信息修改」站内信，返回实际收件人数
 
     函数名保留（避免改动既有调用点），实际收件范围见模块 docstring。
+
+    [调整 2026-09-15] 传入 event_code（+ context 模板变量）时统一走
+    `notification_center.emit`：文案模板、事件开关、收件人规则均可由管理员在
+    「系统设置 → 通知设置」中调整；`title` / `content` 作为变量缺失时的兜底文案。
+
+    [新增 2026-09-15] exclude_ids：额外剔除的收件人工号，用于与「任务型通知」
+    去重（例如审核人已收到「待审核」，报备通知就不再打扰他们）。
+
+    [新增 2026-09-15] recipients：显式收件人工号，供「default_recipients_mode
+    为 explicit」的事件使用（如本人改密后给本人的安全回执）；未传时由事件配置决定。
     """
-    recipients = resolve_modification_recipients(db, department, exclude_user_id)
-    if not recipients:
-        return 0
-    message_service.create_message(
-        db, title=title, content=content, recipients=recipients,
-        sender_id=None, msg_type="system",
-        related_type=related_type, related_id=related_id,
+    # ---- 兼容分支：未声明事件的旧调用，保持改造前行为 ----
+    if not event_code:
+        recipients = resolve_modification_recipients(db, department, exclude_user_id)
+        if exclude_ids:
+            blocked = {str(x) for x in exclude_ids if x}
+            recipients = [r for r in recipients if str(r) not in blocked]
+        if not recipients:
+            return 0
+        message_service.create_message(
+            db, title=title, content=content, recipients=recipients,
+            sender_id=None, msg_type="system",
+            related_type=related_type, related_id=related_id,
+        )
+        return len(recipients)
+
+    # 延迟导入：notification_center 在默认收件人解析时反向依赖本模块
+    from app.services import notification_center
+
+    return notification_center.emit(
+        db, event_code,
+        context=context or {},
+        recipients=recipients,
+        department=department,
+        actor_id=exclude_user_id,
+        exclude_ids=exclude_ids,
+        related_type=related_type,
+        related_id=related_id,
+        fallback_title=title,
+        fallback_content=content,
     )
-    return len(recipients)

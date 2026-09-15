@@ -17,7 +17,10 @@ import SafeImage from '../../components/SafeImage';
 import PageContainer from '../../components/PageContainer';
 import PageHeader from '../../components/PageHeader';
 import type { Department } from '../../types/department';
-import { hasPermission, PERM_DEPT_EDIT, PERM_DEPT_DELETE } from '../../utils/permissions';
+// [调整 2026-09-15] 新增导入 PERM_DEPT_VIEW / PERM_DEPT_VIEW_HISTORY：修改历史按钮与后端接口权限保持一致
+import { hasPermission, PERM_DEPT_EDIT, PERM_DEPT_DELETE, PERM_DEPT_VIEW, PERM_DEPT_VIEW_HISTORY } from '../../utils/permissions';
+// [新增 2026-09-15] 修改历史查询按钮：查看最近三次修改的字段级前后对比
+import ModificationHistoryButton from '../../components/ModificationHistoryButton';
 
 const { Title, Text } = Typography;
 const { useToken } = theme;
@@ -37,6 +40,10 @@ const DepartmentDetail: React.FC = () => {
 
   const canEdit = department ? hasPermission(user, PERM_DEPT_EDIT) : false;
   const canDelete = hasPermission(user, PERM_DEPT_DELETE);
+  // [调整 2026-09-15] 修改历史查询入口的显隐：与后端 /api/audit/history 校验一致——
+  // 需 department.view + department.view_history（「修改历史」独立权限，默认仅超级管理员拥有），
+  // 避免无权限用户看到按钮、点击后报 403
+  const canViewHistory = hasPermission(user, PERM_DEPT_VIEW) && hasPermission(user, PERM_DEPT_VIEW_HISTORY);
   const { modal } = App.useApp();
 
   useEffect(() => {
@@ -88,6 +95,14 @@ const DepartmentDetail: React.FC = () => {
         onBack={() => navigate(returnTo || '/departments')}
         extra={(
           <Space>
+            {/* [新增 2026-09-15] 修改历史查询：置于「编辑」左侧，展示最近三次修改的字段级前后对比 */}
+            {canViewHistory && (
+              <ModificationHistoryButton
+                entityType="department"
+                entityId={department.id}
+                entityName={department.name}
+              />
+            )}
             {canEdit && <Button icon={<EditOutlined />} onClick={() => navigate(`/departments/edit/${department.id}`, { state: { returnTo } })}>编辑</Button>}
             {canDelete && <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>删除</Button>}
           </Space>
@@ -96,6 +111,7 @@ const DepartmentDetail: React.FC = () => {
 
       <Card style={{ marginBottom: 16 }}>
         {/* [调整 2026-09-11] 原「变更历史」区块随信息修改功能下线删除 */}
+        {/* [调整 2026-09-15] 修改记录改由页头「修改历史」按钮按需查看（最近三次，含字段前后对比） */}
         {/* 基本信息 */}
         <Descriptions column={2} size="small" style={{ marginTop: 8 }}>
           <Descriptions.Item label="科室名称"><Text strong style={{ fontSize: 16 }}>{department.name}</Text></Descriptions.Item>

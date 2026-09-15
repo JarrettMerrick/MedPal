@@ -80,6 +80,32 @@ export function renderMarkerShape(
   }
 }
 
+/** [新增 2026-09-14] 预警标识专用色（红色方框） */
+export const ALERT_MARKER_COLOR = '#D93025';
+
+/**
+ * [新增 2026-09-14] 绘制「预警标识」专用标记：红色方框 + 居中白色感叹号。
+ *
+ * 用途：标识标记页需要一眼识别出处于预警状态的标识。
+ * 预警标识**不再使用所属分类的形状/颜色**，统一以此样式渲染，突出"需要处理"；
+ * 正常标识仍使用 renderMarkerShape 按分类渲染。
+ */
+export function renderAlertMarkerShape(size: number): React.ReactNode {
+  const k = size / 24; // 以 24x24 网格绘制后整体缩放，保证任意尺寸下比例一致
+  return (
+    <g transform={`scale(${k})`}>
+      {/* 红色圆角方框：白色描边保证在深色/浅色底图上都清晰可辨 */}
+      <rect
+        x={2} y={2} width={20} height={20} rx={3}
+        fill={ALERT_MARKER_COLOR} stroke="#fff" strokeWidth={2}
+      />
+      {/* 居中感叹号：上为竖条、下为圆点 */}
+      <rect x={10.6} y={6.4} width={2.8} height={7.6} rx={1.4} fill="#fff" />
+      <circle cx={12} cy={16.7} r={1.6} fill="#fff" />
+    </g>
+  );
+}
+
 interface MarkerShapeIconProps {
   shape?: string;
   color?: string;

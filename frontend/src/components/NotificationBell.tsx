@@ -11,8 +11,11 @@
  * - 点击某条 → 标记已读并跳转站内信页面定位该条（原先点击仅关闭弹窗、无跳转）；
  * - 底部新增「查看全部站内信」入口。
  *
+ * [调整 2026-09-15] 未读数改由 MessageUnreadContext 统一提供（左侧「站内信」菜单红点、
+ * 本铃铛、站内信页共用同一数据源与同一轮询），本组件不再自行轮询。
+ *
  * 负责：
- * 1. 周期性轮询未读数量（30 秒间隔）
+ * 1. 展示未读数量（数据源见上）
  * 2. 点击展开最近 5 条站内信
  * 3. 单条已读 / 全部已读
  * 4. 跳转站内信页面
@@ -22,8 +25,11 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Popover, Badge, Button, List, Typography, Divider, theme } from 'antd';
 import { BellOutlined, RightOutlined } from '@ant-design/icons';
-import { listInbox, markRead, markAllRead, getUnreadCount } from '../api/messages';
+import { listInbox, markRead, markAllRead } from '../api/messages';
 import type { MessageItem } from '../api/messages';
+// [新增 2026-09-15] 未读数改用全局 Provider（与左侧「站内信」菜单红点、站内信页同源）：
+// 三处数字保证一致，且全站只保留一处轮询（轮询/聚焦刷新/退出清零见 MessageUnreadContext）
+import { useMessageUnread } from '../contexts/MessageUnreadContext';
 import { timeAgo as formatTimeAgo } from '../utils/time';
 
 const { Text } = Typography;
@@ -31,24 +37,14 @@ const { useToken } = theme;
 
 /** 弹层内展示的条数 */
 const PAGE_SIZE = 5;
-/** 未读数轮询间隔（毫秒） */
-const POLL_INTERVAL = 30000;
 
 const NotificationBell: React.FC = () => {
   const { token } = useToken();
   const navigate = useNavigate();
-  const [unread, setUnread] = useState(0);
+  // 未读数来自 MessageUnreadContext（本组件不再自行轮询）
+  const { unread, setUnread } = useMessageUnread();
   const [items, setItems] = useState<MessageItem[]>([]);
   const [open, setOpen] = useState(false);
-
-  const fetchUnread = async () => {
-    try {
-      const { count } = await getUnreadCount();
-      setUnread(count);
-    } catch {
-      // ignore
-    }
-  };
 
   const fetchRecent = async () => {
     try {
@@ -59,13 +55,6 @@ const NotificationBell: React.FC = () => {
       // ignore
     }
   };
-
-  // 定时轮询未读数
-  useEffect(() => {
-    fetchUnread();
-    const interval = setInterval(fetchUnread, POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, []);
 
   // 打开弹窗时加载列表
   useEffect(() => {

@@ -21,6 +21,8 @@ from app.schemas.staff import (
     StaffCreate, StaffUpdate, StaffResponse, StaffListResponse,
     WORK_TYPES, WORK_TYPE_DOCTOR, WORK_TYPE_NURSE,
     WORK_TYPE_TECHNICIAN, WORK_TYPE_ADMIN,
+    # [新增 2026-09-15] 通知文案需要把工种代码转成可读名称（doctor → 医生）
+    WORK_TYPE_LABELS,
 )
 from app.services.staff_service import (
     get_staff_list, get_resigned_staff_list, get_staff,
@@ -373,6 +375,38 @@ def create_staff_endpoint(
     except Exception:
         pass
 
+    # [新增 2026-09-15] 新增人员此前只写留痕、不产生任何站内信（新人建档无人知悉）。
+    # 收件人：超管 + 该人员所属科室的科室管理员（自动排除操作者本人）；
+    # 若无人可收（例如系统仅有一个超管账号且正是他本人操作），回落给操作者本人
+    # 作为操作回执，保证「改了却查不到」不再发生。
+    try:
+        mod_user = get_user(db, current_user.employee_id)
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title="新增人员",
+            content=(
+                f"{modifier_name} 新增了人员 {staff_in.name}({staff_in.employee_id})，"
+                f"工种={WORK_TYPE_LABELS.get(staff_in.work_type, staff_in.work_type)}，"
+                f"科室={staff_in.department}"
+            ),
+            related_type="staff",
+            related_id=int(staff_in.employee_id) if staff_in.employee_id.isdigit() else None,
+            department=staff_in.department,
+            exclude_user_id=current_user.employee_id,
+            event_code="staff.created",
+            context={
+                "操作人": modifier_name,
+                "姓名": staff_in.name,
+                "工号": staff_in.employee_id,
+                "科室": staff_in.department,
+                "工种": WORK_TYPE_LABELS.get(staff_in.work_type, staff_in.work_type),
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return staff
 
 
@@ -483,18 +517,35 @@ def update_staff_endpoint(
     # [调整 2026-09-11] 站内信提醒：
     # - 已派发审核任务时，改为「待审核」站内信直达审核人（避免既群发又要审核的重复打扰）；
     # - 免审改动仍沿用原有提醒（收件人 = 超管 + 相关科室管理员，排除操作者本人）。
-    if not reviewers and change_summary and change_summary != "更新操作":
+    # [修复 2026-09-15] 原实现在「已派发审核任务」时**完全不再发提醒**，形成监管空白：
+    # 审核人只知道自己被指派了任务，而未参与审核的其他管理者（通常是超管）对
+    # 「某个字段已经被改动」一无所知。现补发一条报备通知给「超管 + 相关科室管理员」
+    # 中**未担任审核人**的成员（exclude_ids 去重，避免重复打扰审核人）。
+    if change_summary and change_summary != "更新操作":
         mod_user = get_user(db, current_user.employee_id)
         modifier_name = mod_user.name if mod_user else current_user.employee_id
         notify_super_admins(
             db,
-            title="人员信息被修改",
-            content=f"{modifier_name} 修改了 {staff.name}({employee_id}) 的{change_summary}",
+            title="人员信息被修改" + ("（已提交审核）" if reviewers else ""),
+            content=(
+                f"{modifier_name} 修改了 {staff.name}({employee_id}) 的{change_summary}"
+                + (f"（已提交审核，待 {len(reviewers)} 位审核人处理）" if reviewers else "")
+            ),
             related_type="staff",
             # 站内信详情页据此跳转到人员详情（工号均为 6 位数字）
             related_id=int(employee_id) if employee_id.isdigit() else None,
             department=staff.department,
             exclude_user_id=current_user.employee_id,
+            # 审核人已单独收到「待审核」任务通知，此处不重复打扰
+            exclude_ids=reviewers or None,
+            # [新增 2026-09-15] 接入可配置通知中心（事件：人员信息被修改）
+            event_code="staff.updated",
+            context={
+                "操作人": modifier_name,
+                "姓名": staff.name,
+                "工号": employee_id,
+                "变更内容": change_summary,
+            },
         )
 
     db.commit()
@@ -525,6 +576,9 @@ def delete_staff_endpoint(
 
     staff_name = staff.name
     staff_work_type = staff.work_type
+    # [新增 2026-09-15] 记录所属科室：删除后的站内信需要用它来解析收件人
+    # （超管 + 该科室的科室管理员），删除后再取会触发已删除对象的属性访问错误
+    staff_department = staff.department
     success = delete_staff(db, employee_id)
     if not success:
         raise HTTPException(status_code=404, detail="人员不存在")
@@ -537,6 +591,36 @@ def delete_staff_endpoint(
             modified_by=current_user.employee_id,
             change_summary=f"删除人员: {staff_name}({employee_id}) 工种={staff_work_type}",
             ip_address=client_ip,
+        )
+    except Exception:
+        pass
+
+    # [新增 2026-09-15] 删除人员此前只写留痕、不产生站内信。删除档案会连带清理
+    # 照片文件，属不可逆的高敏感操作，现补上提醒（事件：删除人员）：
+    # 收件人 = 超管 + 该人员所属科室的科室管理员（排除操作者本人），
+    # 若无人可收则回落给操作者本人作为操作回执。
+    try:
+        mod_user = get_user(db, current_user.employee_id)
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title="删除人员",
+            content=(
+                f"{modifier_name} 删除了人员 {staff_name}({employee_id})，"
+                f"工种={WORK_TYPE_LABELS.get(staff_work_type, staff_work_type)}，"
+                f"科室={staff_department or '未设置'}，其档案与照片文件已被清理"
+            ),
+            related_type="staff",
+            department=staff_department,
+            exclude_user_id=current_user.employee_id,
+            event_code="staff.deleted",
+            context={
+                "操作人": modifier_name,
+                "姓名": staff_name,
+                "工号": employee_id,
+                "科室": staff_department or "未设置",
+                "工种": WORK_TYPE_LABELS.get(staff_work_type, staff_work_type),
+            },
         )
     except Exception:
         pass
@@ -635,18 +719,36 @@ def update_staff_status(
                     f"{operator_name} 已将 {staff.name}（{employee_id} · {staff.department}）标记为离职"
                     f"{extra}；其登录账号已停用。"
                 )
+                event_code = "staff.resigned"
+                context = {
+                    "操作人": operator_name,
+                    "姓名": staff.name,
+                    "工号": employee_id,
+                    "科室": staff.department,
+                    "离职原因": extra,
+                }
             else:
                 title = "人员复职提醒"
                 content = (
                     f"{operator_name} 已将 {staff.name}（{employee_id} · {staff.department}）恢复为在职，"
                     f"登录账号已恢复启用。"
                 )
+                event_code = "staff.restored"
+                context = {
+                    "操作人": operator_name,
+                    "姓名": staff.name,
+                    "工号": employee_id,
+                    "科室": staff.department,
+                }
             notify_super_admins(
                 db, title=title, content=content,
                 related_type="staff",
                 related_id=int(employee_id) if employee_id.isdigit() else None,
                 department=staff.department,
                 exclude_user_id=current_user.employee_id,
+                # [新增 2026-09-15] 接入可配置通知中心（离职 / 复职为两个独立事件，可分别开关）
+                event_code=event_code,
+                context=context,
             )
         except Exception:
             pass

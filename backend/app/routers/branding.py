@@ -19,6 +19,8 @@ from app.dependencies import PERM_SYSTEM_CONFIG, get_current_user, has_permissio
 from app.models.user import User
 from app.services import branding_service
 from app.services.audit_service import audit_action
+# [新增 2026-09-15] 站内信提醒：品牌设置（Logo）变更后通知超管
+from app.services.modification_notify import notify_super_admins
 
 router = APIRouter(tags=["品牌设置"])
 
@@ -53,6 +55,31 @@ async def upload_brand_logo(
         db, "brand_logo_upload", current_user.employee_id, request,
         detail=f"url={result.get('logo_url')}", target="org_logo",
     )
+
+    # [新增 2026-09-15] 品牌变更后补发站内信（事件：品牌设置变更）：
+    # 单位 Logo 会出现在登录页与全局页头（对外可见），被替换属重大外观变更，
+    # 此前只写审计日志，超管无任何主动知会。
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        logo_url = str(result.get("logo_url") or "")
+        file_name = logo_url.rsplit("/", 1)[-1] or "未知文件"
+        notify_super_admins(
+            db,
+            title="品牌设置变更",
+            content=f"{modifier_name} 上传/更换了单位 Logo（{file_name}）",
+            related_type="system_alert",
+            exclude_user_id=current_user.employee_id,
+            event_code="branding.changed",
+            context={
+                "操作人": modifier_name,
+                "对象": "Logo",
+                "变更内容": f"上传/更换 Logo（{file_name}）",
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
     return result
 
 
@@ -73,4 +100,25 @@ def reset_brand_logo(
         db, "brand_logo_reset", current_user.employee_id, request,
         detail="恢复内置默认 Logo", target="org_logo",
     )
+
+    # [新增 2026-09-15] Logo 重置后补发站内信（事件：品牌设置变更）
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title="品牌设置变更",
+            content=f"{modifier_name} 将单位 Logo 重置为内置默认图",
+            related_type="system_alert",
+            exclude_user_id=current_user.employee_id,
+            event_code="branding.changed",
+            context={
+                "操作人": modifier_name,
+                "对象": "Logo",
+                "变更内容": "重置为内置默认 Logo",
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
     return result

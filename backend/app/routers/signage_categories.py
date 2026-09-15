@@ -13,11 +13,58 @@ from typing import Optional, List
 from datetime import datetime
 # [新增 2026-09-09] 分类写操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：标识分类增删改后通知管理方（此前只留痕不提醒）
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/signage-categories", tags=["标识分类管理"])
+
+
+# [新增 2026-09-15] 分类字段中文名与取值可读化映射（用于站内信变更摘要）
+_CATEGORY_FIELD_LABELS = {
+    "name": "名称", "code": "编码", "description": "描述", "color": "颜色",
+    "shape": "标记形状", "inspection_cycle_days": "巡检周期(天)", "is_active": "启用状态",
+}
+_SHAPE_LABELS = {
+    "circle": "圆形", "square": "方形", "triangle": "三角形",
+    "diamond": "菱形", "star": "星形", "hydrant": "消防栓",
+}
+
+
+def _fmt_category_value(field: str, value) -> str:
+    """[新增 2026-09-15] 分类字段值可读化：布尔转启用/停用、形状代码转中文"""
+    if value is None or value == "":
+        return "空"
+    if field == "is_active":
+        return "启用" if value else "停用"
+    if field == "shape":
+        return _SHAPE_LABELS.get(str(value), str(value))
+    if field == "inspection_cycle_days":
+        return f"{value} 天"
+    return str(value)
+
+
+def _notify_category_change(
+    db: Session, current_user: User, cat_label: str, summary: str, cat_id: int | None = None,
+) -> None:
+    """[新增 2026-09-15] 标识分类变更站内信（统一出口，失败静默）"""
+    try:
+        modifier_name = getattr(current_user, "name", None) or current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"标识分类变更：{cat_label}",
+            content=f"{modifier_name} {summary}",
+            related_type="signage",
+            related_id=cat_id,
+            exclude_user_id=current_user.employee_id,
+            event_code="signage.changed",
+            context={"操作人": modifier_name, "对象": cat_label, "变更内容": summary},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # [修复 2026-09-05] 校验分类颜色：空值允许，非空必须为合法十六进制 #RRGGBB
@@ -219,6 +266,11 @@ def create_signage_category(
                      detail=f"name={item.name}, code={item.code}", target=str(item.id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_category_change(
+        db, current_user, f"分类「{item.name}」",
+        f"新增了标识分类「{item.name}」（代码 {item.code}）", item.id,
+    )
     return item
 
 
@@ -255,6 +307,9 @@ def update_signage_category(
         if existing_code:
             raise HTTPException(status_code=400, detail="分类编码已存在")
     
+    # [新增 2026-09-15] 变更前快照：同一 session 实例 setattr 后读到的是新值，
+    # 必须在写库之前取旧值，否则站内信摘要永远比不出差异
+    _old = {k: getattr(item, k, None) for k in update_data.keys()}
     for key, value in update_data.items():
         setattr(item, key, value)
     
@@ -267,6 +322,22 @@ def update_signage_category(
                      detail=f"name={item.name}, code={item.code}", target=str(category_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed；仅在字段确有变化时发送）
+    changes = []
+    for key, new_val in update_data.items():
+        old_val = _old.get(key)
+        if str(old_val or "") == str(new_val or ""):
+            continue
+        changes.append(
+            f"{_CATEGORY_FIELD_LABELS.get(key, key)}: "
+            f"{_fmt_category_value(key, old_val)} → {_fmt_category_value(key, new_val)}"
+        )
+    if changes:
+        _notify_category_change(
+            db, current_user, f"分类「{item.name}」",
+            "修改了标识分类「{}」：{}".format(item.name, "；".join(changes[:8])),
+            item.id,
+        )
     return item
 
 
@@ -293,4 +364,9 @@ def delete_signage_category(
                      detail=f"name={cat_name}, code={cat_code}", target=str(category_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_category_change(
+        db, current_user, f"分类「{cat_name}」",
+        f"删除了标识分类「{cat_name}」（代码 {cat_code}）", category_id,
+    )
     return {"message": "删除成功"}

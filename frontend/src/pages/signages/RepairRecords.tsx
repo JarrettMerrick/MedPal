@@ -3,6 +3,8 @@
 // 导出前弹窗确认筛选范围（条数），可导出 Excel / CSV；维修前后照片缩略图可点击放大对比
 import React, { useCallback, useEffect, useState } from 'react';
 import { Card, Table, Button, Input, Select, DatePicker, Space, Tag, Modal, message, Image, Spin } from 'antd';
+// [新增 2026-09-14] 标识编码跳转标识详情
+import { Link } from 'react-router-dom';
 import { SearchOutlined, ReloadOutlined, FileExcelOutlined, FileTextOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import api from '../../api/client';
@@ -118,7 +120,16 @@ const RepairRecords: React.FC = () => {
   };
 
   const columns = [
-    { title: '标识编码', dataIndex: 'code', key: 'code', width: 130 },
+    {
+      // [调整 2026-09-14] 标识编码改为可点击链接，跳转该标识的详情页。
+      // 用 Link 渲染真实 <a>，支持中键/Ctrl+点击在新标签页打开；
+      // 列宽由 130 放宽到 150 以适应链接样式下的编码长度。
+      title: '标识编码', dataIndex: 'code', key: 'code', width: 150,
+      render: (code: string | undefined, r: SignageRepairListItem) =>
+        code
+          ? <Link to={`/signages/${r.signage_id}`}>{code}</Link>
+          : '-',
+    },
     { title: '标识名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 160 },
     {
       title: '位置', key: 'location', ellipsis: true, width: 180,

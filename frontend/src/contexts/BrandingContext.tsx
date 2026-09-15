@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 /**
- * 全局品牌信息 Provider（单位名称 / 单位 Logo / 系统名称）。
+ * 全局品牌信息 Provider（单位名称 / 单位 Logo / 系统名称 / 宣传标语）。
  *
  * 设计：
  * - 单一数据源：全站（登录页、导航栏、工作台、系统设置页）统一消费本 context，
@@ -32,6 +32,11 @@ interface BrandingState {
    * 未配置时为空字符串，展示方回退到内置默认 Logo。
    */
   logoUrl: string;
+  /**
+   * 宣传标语：显示在登录页与已登录页面底部；
+   * 未配置或管理员主动清空时为空字符串，展示方据此隐藏该区域。
+   */
+  slogan: string;
   /** 原始配置（供设置页展示/编辑） */
   raw: BrandingInfo | null;
   /** 重新拉取品牌信息（保存后调用，立即全局生效） */
@@ -83,6 +88,9 @@ export const BrandingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const orgNameEn = rawOrgNameEn || NOT_SET_TEXT;
   const systemName = raw?.system_name?.trim() || DEFAULT_SYSTEM_NAME;
   const logoUrl = useMemo(() => withVersion(raw?.logo_url || '', raw?.updated_at ?? null), [raw]);
+  // [新增 2026-09-12] 宣传标语：空字符串表示未配置或管理员已清空，展示方据此隐藏。
+  // 注意：不参与 document.title 拼接，避免浏览器标题过长。
+  const slogan = raw?.slogan?.trim() || '';
 
   // 浏览器标签标题：仅在单位名称确有配置时才拼接，避免出现「未设置 · ...」
   const pageTitle = useMemo(
@@ -109,6 +117,7 @@ export const BrandingProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     orgNameEn,
     systemName,
     logoUrl,
+    slogan,
     raw,
     refresh,
   };

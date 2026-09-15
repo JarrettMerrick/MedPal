@@ -26,15 +26,30 @@ import { useAuth } from '../contexts/AuthContext';
 import LayoutContext from '../contexts/LayoutContext';
 import { getRoleLabel } from '../utils/roles'; // [改进] getRoleColor 移除此处，改用 getRoleBadgeStyle
 // [修复 2026-09-07] 标识菜单门禁改用细粒度权限（标识平面/标识设置两大分类）
-import { hasPermission, PERM_REGULATION_VIEW, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_MARKER, PERM_SIGNAGE_ALERT, PERM_SIGNAGE_INSPECTION, PERM_SIGNAGE_REPAIR, PERM_SIGNAGE_FLOORPLAN, PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_CATEGORY, PERM_SIGNAGE_SUPPLIER, PERM_STAFF_VIEW_RESIGNED, PERM_DATA_EXPORT, PERM_USER_VIEW, PERM_ROLE_VIEW, PERM_SYSTEM_CONFIG, PERM_USER_APPROVE, PERM_MESSAGE_VIEW, PERM_STAFF_APPROVE } from '../utils/permissions';
+// [调整 2026-09-14] 站内信/标识/制度菜单入口统一改用**单一功能开关权限点** feature.access
+// （同时受「系统设置 → 功能开关」按模块分别约束，见 canShow），功能内部操作仍由细粒度权限控制
+// [调整 2026-09-15] 模块入口（站内信/制度管理/标识平面/标识设置）的角色级门禁改为**细粒度权限**驱动：
+// 原先统一用「功能开关」权限点 feature.access，导致按角色单独授予「标识巡检」等细粒度权限后菜单仍不可见
+// （feature.access 默认仅超管）。单位级「功能开关」仍由各项的 feature 字段控制，不受影响。
+import { hasPermission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_MARKER, PERM_SIGNAGE_ALERT, PERM_SIGNAGE_INSPECTION, PERM_SIGNAGE_REPAIR, PERM_SIGNAGE_FLOORPLAN, PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_CATEGORY, PERM_SIGNAGE_SUPPLIER, PERM_STAFF_VIEW_RESIGNED, PERM_DATA_EXPORT, PERM_USER_VIEW, PERM_ROLE_VIEW, PERM_SYSTEM_CONFIG, PERM_USER_APPROVE, PERM_STAFF_APPROVE, PERM_FEATURE_NOTIFICATION, PERM_MESSAGE_VIEW, PERM_REGULATION_VIEW } from '../utils/permissions';
 import useMediaQuery from '../hooks/useMediaQuery'; // [改进] 响应式断点 Hook
 import ChangePasswordModal from './ChangePasswordModal';
 import NotificationBell from './NotificationBell';
 import ChangelogModal from './ChangelogModal'; // [改进] 版本更新记录弹窗
+// [新增 2026-09-15] 未审核条数角标（红底白字）：展示「信息审核」菜单的待办数量
+import ReviewCountBadge from './ReviewCountBadge';
 // [调整 2026-09-10] 统一品牌 Logo 组件：显示高度固定、宽度按 Logo 原始比例等比伸缩
 import BrandLogo from './BrandLogo';
 // [新增 2026-09-10] 全局品牌信息（单位名称 / 已上传 Logo）
 import { useBranding } from '../contexts/BrandingContext';
+// [新增 2026-09-14] 全局功能开关（单位级功能启停，控制菜单与入口显隐）
+import { useFeatures } from '../contexts/FeaturesContext';
+// [新增 2026-09-15] 待审核数量（「信息审核」菜单角标；与信息审核页内 Tab 共用同一数据源）
+import { useReviewBadge } from '../contexts/ReviewBadgeContext';
+// [新增 2026-09-15] 站内信未读数（「站内信」菜单红点；与顶栏铃铛、站内信页共用同一数据源）
+import { useMessageUnread } from '../contexts/MessageUnreadContext';
+// [新增 2026-09-14] 功能标识类型（'messages' | 'signage' | 'regulation'），标注菜单受哪个开关约束
+import type { FeatureKey } from '../api/features';
 
 // [改进] Ant Design 组件（全部本地化，内网可用）
 import { Layout, Menu, Button, Dropdown, Space, Modal, Typography, Drawer, Avatar, theme } from 'antd';
@@ -52,6 +67,10 @@ import {
   SettingOutlined,
   // [新增 2026-09-10] 单位设置 / 账号设置 / 信息审核图标
   PictureOutlined, UserSwitchOutlined, AuditOutlined,
+  // [新增 2026-09-14] 功能开关菜单图标
+  ControlOutlined,
+  // [新增 2026-09-15] 通知设置菜单图标
+  NotificationOutlined,
 } from '@ant-design/icons';
 import type { ItemType } from 'antd/es/menu/interface';
 import pkg from '../../package.json'; // [改进] 从 package.json 读取版本号，避免硬编码导致发版遗漏（路径需指向 frontend 根目录）
@@ -83,11 +102,22 @@ const navGroups: Array<{
     label: string | React.ReactNode;
     icon: React.ReactNode;
     permission?: NavPermission;
+    /** [新增 2026-09-14] 该菜单受哪个单位级功能开关约束（与 permission 共同生效，见 canShow） */
+    feature?: FeatureKey;
+    /**
+     * [新增 2026-09-15] 待办 / 未读角标类型：
+     *   'review' = 显示「信息审核」待审数量（红底白字）；
+     *   'unread' = 显示「站内信」未读数量（红底白字）。
+     * 只声明"要挂哪种角标"，具体数值在渲染时从对应 Context 读取，
+     * 避免把动态数量写进这份静态导航配置。
+     */
+    badge?: 'review' | 'unread';
     children?: Array<{
       path: string;
       label: string;
       icon: React.ReactNode;
       permission?: NavPermission;
+      feature?: FeatureKey;
     }>;
   }>;
 }> = [
@@ -96,7 +126,9 @@ const navGroups: Array<{
     items: [
       { path: '/dashboard', label: '工作台', icon: <HomeOutlined /> },
       // [新增 2026-09-11] 站内信：系统通知 + 管理员群发/私发的统一收件箱
-      { path: '/messages', label: '站内信', icon: <MessageOutlined />, permission: PERM_MESSAGE_VIEW },
+      // [调整 2026-09-15] 门禁改为细粒度权限 message.view；feature 指明其受哪个单位级开关控制
+      // [新增 2026-09-15] 未读红点：显示未读站内信数量（与顶栏铃铛、站内信页同源）
+      { path: '/messages', label: '站内信', icon: <MessageOutlined />, permission: PERM_MESSAGE_VIEW, feature: 'messages', badge: 'unread' },
     ],
   },
   {
@@ -104,7 +136,8 @@ const navGroups: Array<{
     items: [
       { path: '/staff', label: '人员管理', icon: <TeamOutlined /> },
       { path: '/departments', label: '科室管理', icon: <BankOutlined /> },
-      { path: '/regulations', label: '制度管理', icon: <FileTextOutlined />, permission: PERM_REGULATION_VIEW },
+      // [调整 2026-09-14] 「制度管理」门禁为功能开关权限点 feature.access，受「制度牌」开关控制
+      { path: '/regulations', label: '制度管理', icon: <FileTextOutlined />, permission: PERM_REGULATION_VIEW, feature: 'regulation' },
       // [修复 2026-09-04] 标识平面菜单，将标识相关菜单项移入子菜单
       // [修复 2026-09-07] 子菜单门禁按细粒度权限拆分（标识管理/标识标记/标识预警/标识巡检）
       {
@@ -112,6 +145,10 @@ const navGroups: Array<{
         // [修复 2026-09-09] 点击「标识平面」直接跳转到标识总览（同时保留展开子菜单行为）
         label: <Link to="/signage-overview">标识平面</Link>,
         icon: <TagsOutlined />,
+        // [调整 2026-09-15] 分组级门禁：标识细粒度权限任一 +「标识平面与标识设置」单位级开关
+        // （原先为 feature.access，会使仅有「标识巡检」等细粒度权限的角色看不到入口）
+        permission: [PERM_SIGNAGE_VIEW, PERM_SIGNAGE_MARKER, PERM_SIGNAGE_ALERT, PERM_SIGNAGE_INSPECTION, PERM_SIGNAGE_REPAIR],
+        feature: 'signage',
         children: [
           { path: '/signage-overview', label: '标识总览', icon: <DashboardOutlined />, permission: PERM_SIGNAGE_VIEW },
           { path: '/signages', label: '标识管理', icon: <TagsOutlined />, permission: PERM_SIGNAGE_VIEW },
@@ -126,11 +163,13 @@ const navGroups: Array<{
       { path: '/staff-rest-area', label: '离职人员', icon: <UserDeleteOutlined />, permission: PERM_STAFF_VIEW_RESIGNED },
       // [调整 2026-09-11] 「信息审核」合并两个 Tab：账号注册审核（user.approve）+
       // 信息变更审核（staff.approve）；具备任一权限即可见（页内按权限只显示对应 Tab）
+      // [新增 2026-09-15] 挂待办角标：显示两项待审数量之和（有几条未审核就显示几个数字，红底白字）
       {
         path: '/registration-review',
         label: '信息审核',
         icon: <AuditOutlined />,
         permission: [PERM_USER_APPROVE, PERM_STAFF_APPROVE],
+        badge: 'review',
       },
     ],
   },
@@ -145,6 +184,10 @@ const navGroups: Array<{
         path: '/signage-settings',
         label: '标识设置',
         icon: <BankOutlined />,
+        // [调整 2026-09-15] 分组级门禁：标识设置细粒度权限任一 + 同一单位级开关
+        // （无任何标识设置权限的角色自动看不到本分组）
+        permission: [PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_FLOORPLAN, PERM_SIGNAGE_CATEGORY, PERM_SIGNAGE_SUPPLIER],
+        feature: 'signage',
         children: [
           { path: '/campus-management', label: '院区管理', icon: <BankOutlined />, permission: PERM_SIGNAGE_CAMPUS },
           { path: '/signage-plan-settings', label: '平面设置', icon: <ApartmentOutlined />, permission: PERM_SIGNAGE_FLOORPLAN },
@@ -162,6 +205,11 @@ const navGroups: Array<{
         children: [
           { path: '/system-settings', label: '单位设置', icon: <PictureOutlined />, permission: PERM_SYSTEM_CONFIG },
           { path: '/account-settings', label: '账号设置', icon: <UserSwitchOutlined />, permission: PERM_SYSTEM_CONFIG },
+          // [新增 2026-09-14] 功能开关：单位级功能启停（站内信 / 标识平面与标识设置）
+          { path: '/feature-settings', label: '功能开关', icon: <ControlOutlined />, permission: PERM_SYSTEM_CONFIG },
+          // [新增 2026-09-15] 通知设置：按业务事件配置系统站内信的开关 / 文案 / 收件人
+          // [调整 2026-09-15] 门禁改为独立权限点 feature.notification（角色管理 →「系统设置」分类）
+          { path: '/notification-settings', label: '通知设置', icon: <NotificationOutlined />, permission: PERM_FEATURE_NOTIFICATION },
           // [调整 2026-09-10] 角色管理由顶级项移入「系统设置」父级菜单（路由 /roles 与权限不变）
           { path: '/roles', label: '角色管理', icon: <SafetyCertificateOutlined />, permission: PERM_ROLE_VIEW },
         ],
@@ -178,6 +226,11 @@ const IDLE_TIMEOUT = 5 * 60 * 1000;
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, logout, isFirstLogin, setUser } = useAuth();
   const branding = useBranding(); // [新增 2026-09-10] 单位 Logo 与单位名称
+  const features = useFeatures(); // [新增 2026-09-14] 功能开关（站内信 / 标识平面与标识设置）
+  // [新增 2026-09-15] 「信息审核」菜单角标数据：两项待审数量之和（与页内 Tab 同源，保证数字一致）
+  const { total: reviewBadgeTotal } = useReviewBadge();
+  // [新增 2026-09-15] 「站内信」菜单红点数据：未读数量（与顶栏铃铛、站内信页同源）
+  const { unread: unreadBadgeTotal } = useMessageUnread();
   const location = useLocation();
   const navigate = useNavigate();
   const { token } = theme.useToken();
@@ -202,12 +255,21 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   // ---- 导航权限过滤（扁平化后用于标题匹配） ----
   // [新增 2026-09-11] 支持权限数组：任一满足即可见（如「信息审核」同时服务注册审核与变更审核）
-  const canShow = (perm?: NavPermission) =>
-    !perm || (Array.isArray(perm) ? perm.some((p) => hasPermission(user, p)) : hasPermission(user, perm));
+  // [调整 2026-09-15] 受功能开关管控的模块入口采用两层控制：
+  //   1) 单位级「功能开关」——由 item.feature 指明该菜单受哪个开关约束，关闭则对所有人隐藏；
+  //   2) 角色级**细粒度权限**——站内信用 message.view、制度用 regulation.view、
+  //      标识平面用标识类权限（任一）、标识设置用设置类权限（任一）。
+  //      原先统一用功能开关权限点 feature.access，会使仅有细粒度权限的角色看不到入口。
+  //   后端对应接口同样会返回 403，前端隐藏仅用于保持一致体验。
+  const canShow = (perm?: NavPermission, feature?: FeatureKey) => {
+    if (feature && !features.isEnabled(feature)) return false;
+    const list = perm ? (Array.isArray(perm) ? perm : [perm]) : [];
+    return !perm || list.some((p) => hasPermission(user, p));
+  };
 
   const flatNav = navGroups
     .flatMap((g) => g.items)
-    .filter((item) => canShow(item.permission));
+    .filter((item) => canShow(item.permission, item.feature));
 
   // [修复 2026-09-07] 汇总含子菜单的全部菜单项（子项独立鉴权）用于当前路由匹配；
   // 原先仅匹配顶级项，进入标识平面/标识设置的子页面（如 /signages、/campus-management）时
@@ -215,7 +277,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const allNav = [
     ...flatNav,
     ...flatNav.flatMap((item) =>
-      (item.children || []).filter((c) => canShow(c.permission))
+      (item.children || []).filter((c) => canShow(c.permission, c.feature))
     ),
   ];
 
@@ -310,17 +372,22 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     label: string | React.ReactNode;
     icon: React.ReactNode;
     permission?: NavPermission;
+    /** [新增 2026-09-14] 该菜单受哪个单位级功能开关约束（与 permission 共同生效） */
+    feature?: FeatureKey;
+    /** [新增 2026-09-15] 角标类型：'review' = 信息审核待审数；'unread' = 站内信未读数 */
+    badge?: 'review' | 'unread';
     children?: Array<{
       path: string;
       label: string;
       icon: React.ReactNode;
       permission?: NavPermission;
+      feature?: FeatureKey;
     }>;
   // [修复 2026-09-05] 显式标注返回类型 ItemType[]：递归函数的返回类型无法被自动推断
   // （TS7023/7024/7022），需手工声明以打破循环引用
   }>): ItemType[] => {
     return items
-      .filter((item) => canShow(item.permission))
+      .filter((item) => canShow(item.permission, item.feature))
       .map((item): ItemType => {
         // 如果有子菜单，递归处理
         if (item.children && item.children.length > 0) {
@@ -334,11 +401,29 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             children: childItems,
           };
         }
+        // [新增 2026-09-15] 角标计数（信息审核待审 / 站内信未读）：数量为 0 时角标组件自身不渲染
+        const badgeCount = item.badge === 'review' ? reviewBadgeTotal
+          : item.badge === 'unread' ? unreadBadgeTotal : 0;
+        // 侧边栏折叠时 antd 会隐藏菜单文字，此时把角标挂到图标右上角，避免待办完全不可见
+        const collapsedNow = desktopCollapsed && !isMobile;
+
         // 普通菜单项
         return {
           key: item.path,
-          icon: item.icon,
-          label: <Link to={item.path} onClick={handleNavClick}>{item.label}</Link>,
+          icon: badgeCount > 0 && collapsedNow ? (
+            <ReviewCountBadge count={badgeCount} size="small" offset={[0, -2]}>
+              {item.icon}
+            </ReviewCountBadge>
+          ) : item.icon,
+          label: (
+            <Link to={item.path} onClick={handleNavClick}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {item.label}
+                {/* 角标紧跟在菜单文字右侧，红底白字显示待审条数 */}
+                <ReviewCountBadge count={badgeCount} size="small" />
+              </span>
+            </Link>
+          ),
         };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -517,7 +602,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
           {/* 右侧：通知 + 用户信息 + 操作 */}
           <Space size={8}>
-            <NotificationBell />
+            {/* [调整 2026-09-14] 站内信功能关闭时隐藏消息铃铛：避免入口残留与无效的未读数轮询 */}
+            {features.isEnabled('messages') && <NotificationBell />}
 
             {/* 用户下拉菜单 */}
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
@@ -578,10 +664,36 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         </AntHeader>
 
         {/* 内容区域 */}
-        <Content style={{ padding: token.paddingLG, minHeight: 'calc(100vh - 56px)' }}>
+        {/* [调整 2026-09-12] 改为纵向 flex 容器：内容不足一屏时让页脚标语贴底，
+            内容超长时随内容自然下移（不遮挡任何内容） */}
+        <Content
+          style={{
+            padding: token.paddingLG,
+            minHeight: 'calc(100vh - 56px)',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           <LayoutContext.Provider value={{ sidebarCollapsed: isMobile ? true : desktopCollapsed }}>
             {children}
           </LayoutContext.Provider>
+
+          {/* [新增 2026-09-12] 页脚宣传标语：marginTop:auto 吸收多余空间实现贴底。
+              未配置或管理员主动清空时整块不渲染；配色沿用侧边栏「版本 x.x.x」的弱化色 */}
+          {branding.slogan && (
+            <div
+              style={{
+                marginTop: 'auto',
+                paddingTop: token.paddingLG,
+                textAlign: 'center',
+                fontSize: token.fontSizeSM,
+                color: SIDER.textTertiary,
+                flexShrink: 0,
+              }}
+            >
+              {branding.slogan}
+            </div>
+          )}
         </Content>
       </Layout>
 

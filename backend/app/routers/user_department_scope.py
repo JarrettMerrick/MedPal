@@ -20,6 +20,8 @@ from app.schemas.user_department_scope import (
 )
 # [新增 2026-09-09] 科室权限范围变更审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：科室管辖范围变更后通知管理方（超管 + 相关科室管理员）
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 
 router = APIRouter(prefix="/api/user-department-scope", tags=["用户科室权限范围"])
@@ -154,6 +156,33 @@ def add_user_department_scope(
                      detail=f"target={employee_id}, dept={dept.name}", target=employee_id, ip_address=client_ip)
         db.commit()
     except Exception: pass
+
+    # [新增 2026-09-15] 科室管辖范围变更后补发站内信（事件：数据范围 / 科室管辖变更）：
+    # 赋权直接影响账号能看到/能改的数据范围，是最需要知会的敏感操作之一，
+    # 此前只写审计日志，超管与相关科室管理员不知情（默默扩大范围无人察觉）。
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title="数据范围被调整",
+            content=(
+                f"{modifier_name} 为 {user.name}({employee_id}) "
+                f"新增了管辖科室：{dept.name}"
+            ),
+            related_type="user",
+            department=user.department or dept.name,
+            exclude_user_id=current_user.employee_id,
+            event_code="user.scope_changed",
+            context={
+                "操作人": modifier_name,
+                "姓名": user.name,
+                "工号": employee_id,
+                "变更内容": f"新增管辖科室：{dept.name}",
+            },
+        )
+        db.commit()
+    except Exception: pass
     
     return UserDepartmentScopeResponse(
         id=scope.id,
@@ -182,6 +211,12 @@ def delete_user_department_scope(
     ).first()
     if not scope:
         raise HTTPException(status_code=404, detail="科室关联不存在")
+
+    # [新增 2026-09-15] 删除前先取科室名与目标账号：关联删除后无法再读取，
+    # 而站内信与审计需要写明「撤销了哪个科室的管辖」。
+    removed_dept = db.query(Department).filter(Department.id == scope.department_id).first()
+    removed_dept_name = removed_dept.name if removed_dept else f"ID {scope.department_id}"
+    target_user = db.query(User).filter(User.employee_id == employee_id).first()
     
     # 删除关联
     db.delete(scope)
@@ -192,6 +227,33 @@ def delete_user_department_scope(
         client_ip = get_client_ip(request)
         record_audit(db, "dept_scope_remove", current_user.employee_id,
                      detail=f"target={employee_id}, scope_id={scope_id}", target=employee_id, ip_address=client_ip)
+        db.commit()
+    except Exception: pass
+
+    # [新增 2026-09-15] 撤销管辖后补发站内信（事件：数据范围 / 科室管辖变更）：
+    # 收权同样需要留痕知会（防止「先赋权操作、再悄悄撤销」掩盖越权访问痕迹）。
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        target_name = target_user.name if target_user else employee_id
+        notify_super_admins(
+            db,
+            title="数据范围被调整",
+            content=(
+                f"{modifier_name} 撤销了 {target_name}({employee_id}) "
+                f"对科室「{removed_dept_name}」的管辖"
+            ),
+            related_type="user",
+            department=(target_user.department if target_user else None) or removed_dept_name,
+            exclude_user_id=current_user.employee_id,
+            event_code="user.scope_changed",
+            context={
+                "操作人": modifier_name,
+                "姓名": target_name,
+                "工号": employee_id,
+                "变更内容": f"移除管辖科室：{removed_dept_name}",
+            },
+        )
         db.commit()
     except Exception: pass
     
@@ -229,6 +291,15 @@ def update_user_department_scope(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="该用户已停用，无法授予科室权限")
 
+    # [新增 2026-09-15] 变更前快照：批量更新是「整体替换」语义，需对比出
+    # 新增/移除的科室，站内信与留痕才能说清「范围是怎么变的」。
+    old_dept_ids = {
+        s.department_id for s in db.query(UserDepartmentScope).filter(
+            UserDepartmentScope.employee_id == employee_id
+        ).all()
+    }
+    new_dept_ids = set(scope_update.department_ids)
+
     # 删除现有所有关联
     db.query(UserDepartmentScope).filter(
         UserDepartmentScope.employee_id == employee_id
@@ -263,6 +334,52 @@ def update_user_department_scope(
                      detail=f"target={employee_id}, depts={len(scope_update.department_ids)}", target=employee_id, ip_address=client_ip)
         db.commit()
     except Exception: pass
+
+    # [新增 2026-09-15] 管辖范围调整后补发站内信（事件：数据范围 / 科室管辖变更）：
+    # 仅在有实际增减时发送（避免「原样提交」也产生无信息量提醒）。
+    added_ids = new_dept_ids - old_dept_ids
+    removed_ids = old_dept_ids - new_dept_ids
+    if added_ids or removed_ids:
+        try:
+            dept_name_map = {
+                d.id: d.name
+                for d in db.query(Department).filter(
+                    Department.id.in_(added_ids | removed_ids)
+                ).all()
+            }
+
+            def _dept_names(ids):
+                """科室 ID 集合 → 顿号分隔的名称串（已删除的科室回退显示 ID）"""
+                return "、".join(dept_name_map.get(i, f"ID {i}") for i in sorted(ids)) or "无"
+
+            parts = []
+            if added_ids:
+                parts.append(f"新增管辖：{_dept_names(added_ids)}")
+            if removed_ids:
+                parts.append(f"移除管辖：{_dept_names(removed_ids)}")
+            change_text = "；".join(parts)
+
+            mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+            modifier_name = mod_user.name if mod_user else current_user.employee_id
+            notify_super_admins(
+                db,
+                title="数据范围被调整",
+                content=(
+                    f"{modifier_name} 调整了 {user.name}({employee_id}) 的科室管辖范围：{change_text}"
+                ),
+                related_type="user",
+                department=user.department or _dept_names(added_ids or removed_ids),
+                exclude_user_id=current_user.employee_id,
+                event_code="user.scope_changed",
+                context={
+                    "操作人": modifier_name,
+                    "姓名": user.name,
+                    "工号": employee_id,
+                    "变更内容": change_text,
+                },
+            )
+            db.commit()
+        except Exception: pass
 
     # 返回更新后的列表
     scope_list = db.query(UserDepartmentScope).filter(

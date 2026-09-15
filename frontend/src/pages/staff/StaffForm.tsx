@@ -7,7 +7,7 @@
  * 人员新增/编辑表单。核心业务逻辑：
  * 1. 工种联动 → 科室类别 → 可选的职称列表
  * 2. 医生/技师额外显示高级字段（学历、专业擅长、社会任职、荣誉）
- * 3. 编辑模式含照片上传（正面/侧面）+ 工卡照片（权限控制）
+ * 3. 编辑模式含照片上传（正面/侧面，受「照片上传」权限控制，本人不受限）+ 工卡照片（权限控制）
  * 4. 前端校验必填字段（工号、姓名、科室）
  * 
  * 改造说明（v1.1.0）：
@@ -33,7 +33,9 @@ import PhotoUpload from '../../components/PhotoUpload';
 import PageContainer from '../../components/PageContainer';
 import PageHeader from '../../components/PageHeader';
 import { useAuth } from '../../contexts/AuthContext';
-import { hasPermission, PERM_CARD_UPLOAD } from '../../utils/permissions';
+// [调整 2026-09-15] 新增导入 PERM_STAFF_PHOTO_UPLOAD（照片上传权限）与 PERM_STAFF_EDIT
+// （删除照片仍属「修改人员信息」范畴），用于照片区的权限门禁与提示
+import { hasPermission, PERM_CARD_UPLOAD, PERM_STAFF_EDIT, PERM_STAFF_PHOTO_UPLOAD } from '../../utils/permissions';
 // [修复 2026-09-02] P4: 导入统一错误处理函数
 import { getErrorMessage } from '../../utils/format';
 
@@ -71,6 +73,10 @@ const StaffForm: React.FC = () => {
   const [error, setError] = useState('');
   const [departments, setDepartments] = useState<{ id: number; name: string; category: string }[]>([]);
   const [cardData, setCardData] = useState<StaffCard | null>(null);
+  // [新增 2026-09-15] 记录页面初次加载时的照片值，用于提交时判断照片是否在本次会话中真正被改动：
+  // 上传接口（/api/uploads/photo）已单独登记照片变更审核，若保存时再提交同一个路径会导致重复审核记录。
+  const [initialFrontPhoto, setInitialFrontPhoto] = useState<string>('');
+  const [initialSidePhoto, setInitialSidePhoto] = useState<string>('');
 
   const canManageCard = hasPermission(user, PERM_CARD_UPLOAD);
 
@@ -86,6 +92,16 @@ const StaffForm: React.FC = () => {
   const showAdvancedFields = workType === 'doctor' || workType === 'technician';
   const isNurse = workType === 'nurse';
   const isAdmin = workType === 'admin';
+
+  // [新增 2026-09-15] 形象照权限（与后端 uploads.py / chunk_upload.py 的校验逻辑保持一致）：
+  //  - 本人维护自己的照片始终允许（isSelf 放行，不校验「照片上传」权限）；
+  //  - 为他人上传/更换形象照需「照片上传」权限（staff.photo_upload），
+  //    可在「角色管理 → 人员管理」中按角色分配/回收，实际范围随角色数据范围
+  //    （仅本人/管辖科室/全部人员）与工种范围自动收敛；
+  //  - 删除照片属「修改人员信息」（staff.edit）范畴，与上传权限分开控制。
+  const isSelf = !!user && !!employeeId && employeeId === user.employee_id;
+  const canUploadPhoto = isSelf || hasPermission(user, PERM_STAFF_PHOTO_UPLOAD);
+  const canDeletePhoto = isSelf || hasPermission(user, PERM_STAFF_EDIT);
 
   // [改进] 根据当前用户的工种数据范围（work_type_scope）计算其可新增的工种。
   // 后端 /api/auth/me 返回 work_type_scope：'all'=所有工种，否则为逗号分隔的工种列表（如 'nurse'）。
@@ -155,6 +171,9 @@ const StaffForm: React.FC = () => {
           front_photo: data.front_photo || '',
           side_photo: data.side_photo || '',
         });
+        // [新增 2026-09-15] 记录加载时的照片基线值，供提交时判断照片是否被真正改动
+        setInitialFrontPhoto(data.front_photo || '');
+        setInitialSidePhoto(data.side_photo || '');
       });
       getCards({ entity_id: id, page_size: 1 }).then((data) => {
         if (data.items.length > 0) setCardData(data.items[0]);
@@ -179,6 +198,17 @@ const StaffForm: React.FC = () => {
             key === 'front_photo' || key === 'side_photo' ? (v || undefined) : (!v && key !== 'work_type' && key !== 'department' ? null : v),
           ])
         );
+        // [修复 2026-09-15] 避免「一张照片产生 2 条审核记录」：
+        // PhotoUpload 上传成功后已由 /api/uploads/photo 直接落库并登记了变更审核（source=photo），
+        // 若此处再把同一个 file_path 提交给 PUT /api/staff/{id}，后端会因「值相同」无法识别为同一次
+        // 上传而重复登记一条审核任务（source=admin）。故：当表单中的照片值与页面初始加载值一致时，
+        // 说明本次保存并未改动照片（上传动作已自行登记），从提交载荷中剔除，交由上传接口独自登记。
+        if ((data.front_photo || undefined) === (initialFrontPhoto || undefined)) {
+          delete (data as Record<string, unknown>).front_photo;
+        }
+        if ((data.side_photo || undefined) === (initialSidePhoto || undefined)) {
+          delete (data as Record<string, unknown>).side_photo;
+        }
         await updateStaff(id, data as any);
       } else {
         await createStaff(values as any);
@@ -282,7 +312,7 @@ const StaffForm: React.FC = () => {
           </Col>
         </Row>
 
-        {/* ③ 形象照片（编辑模式） */}
+        {/* ③ 形象照片（编辑模式；[调整 2026-09-15] 上传受「照片上传」权限控制，本人不受限） */}
         {isEdit && (
           <>
             <SectionTitle>形象照片</SectionTitle>
@@ -296,6 +326,10 @@ const StaffForm: React.FC = () => {
                     currentPhoto={frontPhoto}
                     label="正面形象照"
                     cropAspect={0.75}
+                    // 无「照片上传」权限时禁用上传/更换（组件内展示禁用原因），删除仍由 staff.edit 控制
+                    disabled={!canUploadPhoto}
+                    canDelete={canDeletePhoto}
+                    disabledHint="无「照片上传」权限，仅可查看/下载照片；请联系管理员在「角色管理 → 人员管理」中授予"
                     onUploadSuccess={(v) => form.setFieldsValue({ front_photo: v })}
                     onDeleteSuccess={() => form.setFieldsValue({ front_photo: '' })}
                   />
@@ -310,6 +344,10 @@ const StaffForm: React.FC = () => {
                     currentPhoto={sidePhoto}
                     label="侧面形象照"
                     cropAspect={0.75}
+                    // 无「照片上传」权限时禁用上传/更换（组件内展示禁用原因），删除仍由 staff.edit 控制
+                    disabled={!canUploadPhoto}
+                    canDelete={canDeletePhoto}
+                    disabledHint="无「照片上传」权限，仅可查看/下载照片；请联系管理员在「角色管理 → 人员管理」中授予"
                     onUploadSuccess={(v) => form.setFieldsValue({ side_photo: v })}
                     onDeleteSuccess={() => form.setFieldsValue({ side_photo: '' })}
                   />

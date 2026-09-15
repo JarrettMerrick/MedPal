@@ -30,6 +30,8 @@ import PageHeader from '../../components/PageHeader';
 import RichTextEditor from '../../components/RichTextEditor';
 import RichTextContent from '../../components/RichTextContent';
 import { useAuth } from '../../contexts/AuthContext';
+// [新增 2026-09-15] 未读数全局 Provider：左侧菜单红点 / 顶栏铃铛 / 本页未读计数共用同一数据源
+import { useMessageUnread } from '../../contexts/MessageUnreadContext';
 import { hasPermission, PERM_MESSAGE_BROADCAST, PERM_MESSAGE_SEND } from '../../utils/permissions';
 import { getErrorMessage } from '../../utils/format';
 import { formatDateTime } from '../../utils/time';
@@ -86,7 +88,9 @@ const Messages: React.FC = () => {
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<MessageItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [unread, setUnread] = useState(0);
+  // [调整 2026-09-15] 未读数改用全局 Provider（与左侧「站内信」菜单红点、顶栏铃铛同源）：
+  // 本页加载收件箱 / 标记已读时写入的数字会同步反映到菜单红点与铃铛，避免三处口径不一致
+  const { unread, setUnread } = useMessageUnread();
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [tags, setTags] = useState<MessageTagItem[]>([]);

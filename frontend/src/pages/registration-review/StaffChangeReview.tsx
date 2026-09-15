@@ -23,6 +23,8 @@ import {
   type StaffChangeItem,
 } from '../../api/staffChanges';
 import { getErrorMessage } from '../../utils/format';
+// [新增 2026-09-15] 审核完成后刷新待审角标（Tab 与左侧「信息审核」菜单同源）
+import { useReviewBadge } from '../../contexts/ReviewBadgeContext';
 
 const { Text } = Typography;
 const { useToken } = theme;
@@ -48,6 +50,8 @@ const formatTime = (value: string | null): string =>
 const StaffChangeReview: React.FC<{ focusId?: number }> = ({ focusId }) => {
   const { message, modal } = App.useApp();
   const { token } = useToken();
+  // [新增 2026-09-15] 审核完成后刷新待审角标，使 Tab 与左侧菜单数字立即减少
+  const { refresh: refreshBadge } = useReviewBadge();
   const [status, setStatus] = useState<string>('pending');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -108,6 +112,7 @@ const StaffChangeReview: React.FC<{ focusId?: number }> = ({ focusId }) => {
             message.success('已通过');
           }
           load();
+          refreshBadge(); // [新增 2026-09-15] 待审角标即时减一
         } catch (err) {
           message.error(getErrorMessage(err, '操作失败'));
         } finally {
@@ -134,6 +139,7 @@ const StaffChangeReview: React.FC<{ focusId?: number }> = ({ focusId }) => {
       setRejecting(null);
       setReason('');
       load();
+      refreshBadge(); // [新增 2026-09-15] 待审角标即时减一
     } catch (err) {
       message.error(getErrorMessage(err, '操作失败'));
     } finally {

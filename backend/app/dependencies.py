@@ -30,11 +30,27 @@ PERM_STAFF_STATUS = "staff.status"
 # [新增 2026-09-11] 人员信息变更审核：审核人员信息修改（立即生效 + 追认/回滚）
 # 科室管理员默认拥有（仅限管辖科室的「科室级」变更）；超级管理员审全部
 PERM_STAFF_APPROVE = "staff.approve"
+# [新增 2026-09-15] 照片上传：控制能否上传人员形象照（正面 front / 侧面 side）。
+# 适用范围：
+#  - 本人上传自己的照片始终允许（基础能力，接口中单独放行，不校验本权限）；
+#  - 为他人上传需本权限，且需通过 can_access_staff 科室/工种数据范围校验
+#    （随角色的 department_scope / work_type_scope 生效：own=仅本人 / managed=管辖科室 / all=全部人员）；
+#  - 删除照片不属于上传范畴，仍由 PERM_STAFF_EDIT 控制。
+# 默认启用：超级管理员自动拥有；科室管理员默认拥有（存量角色由启动初始化一次性回填）。
+PERM_STAFF_PHOTO_UPLOAD = "staff.photo_upload"
+# [新增 2026-09-15] 修改历史（人员）：人员详情页「修改历史」入口与
+# /api/audit/history/staff/* 接口的访问权限；默认仅超级管理员拥有，
+# 可在「角色管理 → 人员管理」中按角色授予/回收（回收后入口与接口同时关闭）。
+PERM_STAFF_VIEW_HISTORY = "staff.view_history"
 # 科室管理
 PERM_DEPT_VIEW = "department.view"
 PERM_DEPT_CREATE = "department.create"
 PERM_DEPT_EDIT = "department.edit"
 PERM_DEPT_DELETE = "department.delete"
+# [新增 2026-09-15] 修改历史（科室）：科室详情页「修改历史」入口与
+# /api/audit/history/department/* 接口的访问权限；默认仅超级管理员拥有，
+# 可在「角色管理 → 科室管理」中按角色授予/回收。
+PERM_DEPT_VIEW_HISTORY = "department.view_history"
 # 制度管理
 PERM_REGULATION_VIEW = "regulation.view"
 PERM_REGULATION_CREATE = "regulation.create"
@@ -82,6 +98,21 @@ PERM_STAFF_VIEW_RESIGNED = "staff.view_resigned"
 PERM_MESSAGE_VIEW = "message.view"            # 查看本人站内信（所有角色默认拥有）
 PERM_MESSAGE_SEND = "message.send"            # 私发给指定人员
 PERM_MESSAGE_BROADCAST = "message.broadcast"  # 按全员/科室/角色/权限群发
+# [新增 2026-09-14] 功能级权限点：控制该角色能否访问对应功能。
+# 与「系统设置 → 功能开关」构成两层控制，两者都通过才放行：
+#   1) 功能开关（单位级）：整个单位是否启用该功能；
+#   2) 本权限点（角色级）：该角色是否可访问该功能。
+# 功能内部的具体操作仍由原有细粒度权限（message.send / signage.create 等）控制。
+# [调整 2026-09-14] 由逐功能拆分（feature.messages / feature.signage / feature.regulation）
+# 合并为**单一**权限点：一个角色要么可访问全部受功能开关管控的模块，要么全部不可访问。
+# 具体模块的启停仍由「系统设置 → 功能开关」的单位级开关分别控制。
+PERM_FEATURE_ACCESS = "feature.access"
+# [新增 2026-09-15] 通知设置权限点：控制角色能否访问「系统设置 → 通知设置」
+# （配置系统站内信的事件开关 / 文案模板 / 收件人范围）。
+# 与 PERM_FEATURE_ACCESS 同属「系统设置」分类；此前通知设置复用 system.config，
+# 现拆分为独立权限项，便于按角色单独授权；存量角色由启动初始化一次性回填，
+# 保证升级后访问范围不缩水。
+PERM_FEATURE_NOTIFICATION = "feature.notification"
 
 SUPER_ROLES = (ROLE_SUPER_ADMIN,)  # now = admin_manager
 
@@ -211,6 +242,27 @@ def require_any_permission(*permission_names: str):
                 detail="权限不足"
             )
         return current_user
+    return checker
+
+
+def require_feature_enabled(feature: str):
+    """依赖注入：要求指定功能已被管理员启用（系统设置 → 功能开关）。
+
+    [新增 2026-09-14] 功能开关是**单位级**控制，与角色级权限点（feature.*）互为两层：
+    功能一旦关闭，全单位均不可用（接口直接 403），与该角色的权限配置无关；
+    且关闭后功能内部的后台任务产生的数据只是暂不可见，不会丢失。
+
+    用法：挂在 APIRouter 上整体生效，避免逐个接口漏挂——
+        router = APIRouter(prefix="/api/messages",
+                           dependencies=[Depends(require_feature_enabled("messages"))])
+    """
+    from app.services.system_config_service import FEATURE_LABELS, get_feature_flags
+
+    def checker(db: Session = Depends(get_db)) -> None:
+        if not get_feature_flags(db).get(feature, True):
+            label = FEATURE_LABELS.get(feature, feature)
+            raise HTTPException(status_code=403, detail=f"「{label}」功能已被管理员关闭")
+
     return checker
 
 

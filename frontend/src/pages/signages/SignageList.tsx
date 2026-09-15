@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Input, Select, Space, Tag, message, Popconfirm } from 'antd';
-import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, EyeOutlined } from '@ant-design/icons';
+import { Table, Button, Input, Select, Space, Tag, message, Popconfirm, Tooltip } from 'antd';
+import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, EyeOutlined, CopyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { getSignageList, deleteSignage } from '../../api/signage';
 import type { Signage } from '../../api/signage';
@@ -12,6 +12,8 @@ import { useAuth } from '../../contexts/AuthContext';
 // [修复 2026-09-09] 复用统一状态常量：此前私有 STATUS_MAP 缺 repair_in_progress，
 // 导致列表状态列显示英文原值、且状态筛选下拉缺少「维修处理中」
 import { SIGNAGE_STATUS_MAP, SIGNAGE_STATUS_OPTIONS } from '../../constants/signageStatus';
+// [新增 2026-09-14] 剪贴板复制（兼容院内网 http 访问环境）
+import { copyText } from '../../utils/clipboard';
 
 const { Option } = Select;
 
@@ -103,8 +105,32 @@ const SignageList: React.FC = () => {
     }
   };
 
+  /** [新增 2026-09-14] 一键复制标识编码：巡检/报修时需频繁转述编码，避免手动选中复制出错 */
+  const handleCopyCode = async (code: string) => {
+    const ok = await copyText(code);
+    if (ok) message.success(`已复制编码：${code}`);
+    else message.error('复制失败，请手动选中复制');
+  };
+
   const columns = [
-    { title: '编码', dataIndex: 'code', key: 'code', width: 120 },
+    {
+      // [调整 2026-09-14] 编码列增加一键复制按钮（列宽由 120 放宽以容纳图标）
+      title: '编码', dataIndex: 'code', key: 'code', width: 158,
+      render: (code: string) => (
+        <Space size={2}>
+          <span>{code}</span>
+          <Tooltip title="复制编码">
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => handleCopyCode(code)}
+              aria-label={`复制编码 ${code}`}
+            />
+          </Tooltip>
+        </Space>
+      ),
+    },
     { title: '名称', dataIndex: 'name', key: 'name', width: 200, ellipsis: true },
     { title: '分类', dataIndex: 'category', key: 'category', width: 100 },
     { title: '院区', dataIndex: 'campus', key: 'campus', width: 80 },

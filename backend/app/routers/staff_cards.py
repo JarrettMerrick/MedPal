@@ -11,6 +11,8 @@ from app.dependencies import (
 )
 from app.models.user import User
 from app.schemas.staff_card import StaffCardCreate, StaffCardListResponse, StaffCardResponse, StaffCardUpdate
+# [新增 2026-09-15] 可配置通知中心（工卡上传/确认/拒绝通知统一走事件规则）
+from app.services import notification_center
 from app.services.card_service import (
     confirm_card,
     create_card,
@@ -135,9 +137,10 @@ async def upload_card(
     title = f"{entity_name}的卡片需要确认"
     content = f"{entity_name}（{entity_id}）上传了{type_label}卡片，请及时确认。"
 
-    # 通知本人
-    create_notification(db, entity_id, title, content, "card", card.id)
-    # 通知有卡片上传权限的用户（基于权限系统，而非角色名硬编码）
+    # 收件人 = 本人 + 有卡片上传权限的用户（基于权限系统，而非角色名硬编码），
+    # 该范围即「工卡上传待确认」事件的业务内置默认收件人，管理员可在
+    # 「通知设置 → 工卡上传待确认」中改为自定义范围
+    recipients = [entity_id]
     all_active_users = db.query(User).filter(User.is_active == True).all()
     for u in all_active_users:
         if u.employee_id == entity_id:
@@ -154,7 +157,17 @@ async def upload_card(
                 continue
         elif dept_name and not managed_dept_ids:
             continue
-        create_notification(db, u.employee_id, title, content, "card", card.id)
+        recipients.append(u.employee_id)
+
+    # [调整 2026-09-15] 统一交由通知中心发送（事件：card.uploaded，可开关 / 可改文案与收件人）
+    notification_center.emit(
+        db, "card.uploaded",
+        context={"姓名": entity_name, "工号": entity_id, "人员类型": type_label},
+        recipients=recipients,
+        department=dept_name or None,
+        related_type="card", related_id=card.id,
+        fallback_title=title, fallback_content=content,
+    )
     
     db.commit()
     db.refresh(card)
@@ -315,15 +328,18 @@ def confirm_card_endpoint(
     if not updated_card:
         raise HTTPException(status_code=500, detail="确认失败")
 
-    # 通知卡片上传者：卡片已确认
+    # 通知卡片上传者：卡片已确认（[调整 2026-09-15] 走通知中心 card.confirmed 事件）
     if card.uploaded_by and card.uploaded_by != current_user.employee_id:
         staff = get_staff(db, card.entity_id)
         staff_name = staff.name if staff else card.entity_id
-        create_notification(
-            db, card.uploaded_by,
-            title=f"{staff_name}的卡片照已确认",
-            content=f"{current_user.name} 确认了 {staff_name}({card.entity_id}) 的卡片照",
+        notification_center.emit(
+            db, "card.confirmed",
+            context={"操作人": current_user.name, "姓名": staff_name, "工号": card.entity_id},
+            recipients=[card.uploaded_by],
+            department=(staff.department if staff else None) or None,
             related_type="card", related_id=card.id,
+            fallback_title=f"{staff_name}的卡片照已确认",
+            fallback_content=f"{current_user.name} 确认了 {staff_name}({card.entity_id}) 的卡片照",
         )
 
     db.commit()
@@ -374,16 +390,24 @@ def reject_card_endpoint(
     if not updated_card:
         raise HTTPException(status_code=500, detail="拒绝失败")
 
-    # 通知卡片上传者：卡片被拒绝
+    # 通知卡片上传者：卡片被拒绝（[调整 2026-09-15] 走通知中心 card.rejected 事件）
     if card.uploaded_by and card.uploaded_by != current_user.employee_id:
         staff = get_staff(db, card.entity_id)
         staff_name = staff.name if staff else card.entity_id
         reason_text = f"，原因：{update_data.reject_reason}" if update_data.reject_reason else ""
-        create_notification(
-            db, card.uploaded_by,
-            title=f"{staff_name}的卡片照被拒绝",
-            content=f"{current_user.name} 拒绝了 {staff_name}({card.entity_id}) 的卡片照{reason_text}",
+        notification_center.emit(
+            db, "card.rejected",
+            context={
+                "操作人": current_user.name,
+                "姓名": staff_name,
+                "工号": card.entity_id,
+                "拒绝原因": reason_text,
+            },
+            recipients=[card.uploaded_by],
+            department=(staff.department if staff else None) or None,
             related_type="card", related_id=card.id,
+            fallback_title=f"{staff_name}的卡片照被拒绝",
+            fallback_content=f"{current_user.name} 拒绝了 {staff_name}({card.entity_id}) 的卡片照{reason_text}",
         )
 
     db.commit()

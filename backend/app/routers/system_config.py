@@ -14,6 +14,8 @@ from app.services.system_config_service import (
     SENSITIVE_READ_KEYS,
 )
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：系统配置变更后通知超管
+from app.services.modification_notify import notify_super_admins
 # [新增 2026-09-09] 统一 IP 获取（兼容反向代理）
 from app.utils import get_client_ip
 
@@ -63,6 +65,10 @@ def update_system_config(
         raise HTTPException(status_code=400, detail=str(ve))
 
     config = get_config(db, key)
+    # [新增 2026-09-15] 变更前快照：config 是 ORM 实例，update_config 会就地改写字段，
+    # 快照必须在更新前取值，否则站内信与留痕只能显示「新值 → 新值」。
+    old_value = config.config_value if config else None
+
     if not config:
         config = update_config(
             db=db,
@@ -84,6 +90,39 @@ def update_system_config(
         client_ip = get_client_ip(request)
         record_audit(db, "config_update", current_user.employee_id,
                      detail=f"key={key}", target=key, ip_address=client_ip)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # [新增 2026-09-15] 系统配置变更后补发站内信（事件：系统参数变更）：
+    # 配置误改会全局生效（例如关掉注册审核开关、改默认口令生成规则），
+    # 此前只写审计日志，超管无任何主动知会。
+    try:
+        def _clip(v, limit=80):
+            """值摘要截断：公告富文本等长内容不能原样塞进站内信"""
+            s = "" if v is None else str(v)
+            return s if len(s) <= limit else s[:limit] + "…"
+
+        new_value = config.config_value
+        if old_value is None:
+            change_text = f"新增配置项，值：{_clip(new_value)}"
+        elif str(old_value) != str(new_value):
+            change_text = f"{_clip(old_value)} → {_clip(new_value)}"
+        else:
+            change_text = "重复提交（值未变化）"
+
+        obj_label = config.description or key
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"系统配置变更：{obj_label}",
+            content=f"{modifier_name} 修改了系统配置「{obj_label}」：{change_text}（key: {key}）",
+            related_type="system_alert",
+            exclude_user_id=current_user.employee_id,
+            event_code="system.config_changed",
+            context={"操作人": modifier_name, "对象": obj_label, "变更内容": change_text},
+        )
         db.commit()
     except Exception:
         db.rollback()

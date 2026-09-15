@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from PIL import Image
 
 from app.database import get_db
-from app.dependencies import get_current_user, has_permission, PERM_CARD_UPLOAD, PERM_STAFF_EDIT
+from app.dependencies import (
+    get_current_user, has_permission, PERM_CARD_UPLOAD, PERM_STAFF_EDIT, PERM_STAFF_PHOTO_UPLOAD,
+)
 from app.models.user import User
 from app.models.upload_session import UploadSession
 from app.models.staff_card import StaffCard
@@ -18,6 +20,8 @@ from app.services.upload_service import (
 )
 from app.services.notification_service import create_notification
 from app.services.staff_service import get_staff, update_staff
+# [新增 2026-09-15] 可配置通知中心（分片上传完成后的卡片通知统一走事件规则）
+from app.services import notification_center
 from app.schemas.staff import StaffUpdate
 from app.utils import utc_now
 
@@ -56,26 +60,42 @@ def _check_chunks_disk_quota() -> None:
         )
 
 
-def _check_upload_permission(current_user: User, entity_type: str, entity_id: str, db: Session) -> None:
+def _check_upload_permission(current_user: User, entity_type: str, entity_id: str, db: Session,
+                             photo_type: str | None = None) -> None:
     """校验当前用户是否有权为指定实体上传图片（权限 + 数据范围）。
 
     [改进/F2] 原实现仅在 complete_upload 阶段校验权限，导致 init_upload 阶段
     任何登录用户都能为任意 entity_id 建会话/写 _chunks 目录（磁盘耗尽风险）。
     现将校验抽取为公共函数，init 与 complete 均调用，无权限直接 403。
     无权限或超出数据范围时抛 HTTPException。
+
+    [调整 2026-09-15] 新增 photo_type 形参，按照片用途区分门禁：
+      - card（工卡照片）：保持原有门禁（「上传工卡照片」权限 / 本人 / 「修改人员信息」权限）；
+      - front / side（人员形象照）：改由新增的「照片上传」权限（staff.photo_upload）控制，
+        本人上传自己的照片始终允许（基础能力），为他人上传需该权限 + 科室/工种数据范围。
     """
     # --- 权限验证（基于权限表）---
     if entity_type in ("specialty", "equipment"):
         from app.dependencies import PERM_DEPT_EDIT, has_permission as has_perm
         can_upload = has_perm(current_user, PERM_DEPT_EDIT)
-    else:
+        deny_detail = "无权上传该类型的图片"
+    elif photo_type == "card":
+        # 工卡照片：保持原有门禁（上传工卡照片权限 / 本人 / 修改人员信息）
         can_upload = (
             has_permission(current_user, PERM_CARD_UPLOAD) or
             entity_id == current_user.employee_id or
             has_permission(current_user, PERM_STAFF_EDIT)
         )
+        deny_detail = "无权上传该类型的图片"
+    else:
+        # 人员形象照（front / side）：本人始终允许（基础能力）；为他人上传需「照片上传」权限
+        can_upload = (
+            entity_id == current_user.employee_id or
+            has_permission(current_user, PERM_STAFF_PHOTO_UPLOAD)
+        )
+        deny_detail = "无「照片上传」权限，请联系管理员在「角色管理 → 人员管理」中授予"
     if not can_upload:
-        raise HTTPException(403, "无权上传该类型的图片")
+        raise HTTPException(403, deny_detail)
 
     # --- 数据范围校验（防止越权上传/覆盖他人科室/人员图片）---
     if entity_type in ("specialty", "equipment"):
@@ -91,7 +111,9 @@ def _check_upload_permission(current_user: User, entity_type: str, entity_id: st
             if dept and not has_department_access(current_user, dept.name, db):
                 raise HTTPException(403, "无权上传该科室的图片")
     else:
-        # 人员照片/卡片：非本人需 staff.edit 且在数据范围内
+        # 人员照片/卡片：非本人需通过科室/工种数据范围校验
+        # （照片上传权限的适用范围即由 can_access_staff 结合角色数据范围判定：
+        #   科室范围 own=仅本人 / managed=管辖科室 / all=全部人员，叠加工种范围限定）
         if entity_id != current_user.employee_id:
             from app.dependencies import can_access_staff
             entity = get_staff(db, entity_id)
@@ -123,7 +145,8 @@ def init_upload(
         raise HTTPException(400, "仅支持 JPG/PNG/WebP 格式")
 
     # [改进/F2] 建会话前即校验权限与数据范围，无权者无法创建 _chunks 目录（防磁盘耗尽）
-    _check_upload_permission(current_user, entity_type, entity_id, db)
+    # [调整 2026-09-15] 传入 photo_type，使形象照（front/side）按「照片上传」权限校验
+    _check_upload_permission(current_user, entity_type, entity_id, db, photo_type)
 
     # [改进/1.0.9] 检查单工号并发上传数限制，防止滥用
     # UploadSession 模型无 user_id 字段，按 entity_id 统计活跃会话（覆盖同一人员重复上传的场景）
@@ -288,7 +311,8 @@ def complete_upload(
     photo_type = session.photo_type
 
     # --- 权限验证 + 数据范围校验（与 init_upload 复用同一逻辑）---
-    _check_upload_permission(current_user, entity_type, entity_id, db)
+    # [调整 2026-09-15] 传入 photo_type（取自会话），形象照按「照片上传」权限校验
+    _check_upload_permission(current_user, entity_type, entity_id, db, photo_type)
 
     # --- 验证实体存在 ---
     if entity_type in ("specialty", "equipment"):
@@ -471,9 +495,8 @@ def complete_upload(
             title = f"{entity_name}的卡片需要确认"
             content = f"{entity_name}（{entity_id}）上传了{work_type_label}卡片，请及时确认。"
 
-            # 通知本人
-            create_notification(db, entity_id, title, content, "card", new_card.id)
-            # 通知有卡片上传权限的用户（基于权限系统，而非角色名硬编码）
+            # 收件人 = 本人 + 有卡片上传权限的用户（基于权限系统，而非角色名硬编码）
+            recipients = [entity_id]
             all_active_users = db.query(User).filter(User.is_active == True).all()
             for u in all_active_users:
                 if u.employee_id == entity_id:
@@ -490,7 +513,17 @@ def complete_upload(
                         continue
                 elif dept_name and not managed_dept_ids:
                     continue
-                create_notification(db, u.employee_id, title, content, "card", new_card.id)
+                recipients.append(u.employee_id)
+
+            # [调整 2026-09-15] 统一交由通知中心发送（事件：card.uploaded）
+            notification_center.emit(
+                db, "card.uploaded",
+                context={"姓名": entity_name, "工号": entity_id, "人员类型": work_type_label},
+                recipients=recipients,
+                department=dept_name or None,
+                related_type="card", related_id=new_card.id,
+                fallback_title=title, fallback_content=content,
+            )
 
             db.commit()
         except Exception as e:

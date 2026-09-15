@@ -46,6 +46,8 @@ from app.models.staff_change import (
 )
 from app.models.user import User
 from app.services import message_service
+# [新增 2026-09-15] 可配置通知中心（待审核 / 审核结果 / 超时提醒统一走事件规则）
+from app.services import notification_center
 from app.utils import utc_now
 
 logger = logging.getLogger("staff_change")
@@ -215,6 +217,59 @@ def can_review(db: Session, req: StaffChangeRequest, reviewer: User | None) -> b
 # ==================== 提交 ====================
 
 
+def _reviewers_of(db: Session, req: StaffChangeRequest) -> list[str]:
+    """还原某条待审变更的审核人列表（供去重命中时返回，保持调用方语义一致）。
+
+    仅在记录仍为 pending 时才有意义（终态记录不再需要派发任务，返回空列表）。
+    这里复用 resolve_reviewers 重算，而非新增字段存储：审核人解析规则
+    （科室负责人 / 无负责人升级超管 / 禁止自审）是纯函数式且幂等的。
+    """
+    if req.status != STATUS_PENDING:
+        return []
+    return resolve_reviewers(
+        db, department=req.department, level=req.review_level,
+        submitter_id=req.submitted_by,
+    )
+
+
+def _find_duplicate(
+    db: Session, *, employee_id: str, changed: dict,
+) -> StaffChangeRequest | None:
+    """查找同一人员、同一批字段的**待审**重复变更（幂等去重）。
+
+    [新增 2026-09-15] 修复「上传一张正面照却产生 2 条待审记录」：
+    前端 PhotoUpload 上传成功后会把 file_path 写入表单，用户再点「保存」时
+    `PUT /api/staff/{id}` 又带上了同一个新路径，于是同一次上传被登记两次
+    （source=photo + source=admin）。此处按「同一人员 + 待审中 + 变更字段集合
+    与新值完全一致」判定为同一次变更，复用已有记录、不重复派发审核任务。
+
+    判定条件（三者同时满足才视为重复）：
+      1. 同一 employee_id 且状态为 pending；
+      2. changed_fields 集合完全相同（不多不少）；
+      3. 各字段的新值（payload）完全一致。
+    """
+    candidates = (
+        db.query(StaffChangeRequest)
+        .filter(
+            StaffChangeRequest.employee_id == employee_id,
+            StaffChangeRequest.status == STATUS_PENDING,
+        )
+        .all()
+    )
+    target_keys = set(changed.keys())
+    for req in candidates:
+        try:
+            keys = set(json.loads(req.changed_fields or "[]"))
+            if keys != target_keys:
+                continue
+            prev_payload = json.loads(req.payload or "{}")
+        except (ValueError, TypeError):
+            continue
+        if all((prev_payload.get(k) or None) == (changed[k] or None) for k in target_keys):
+            return req
+    return None
+
+
 def submit_change(
     db: Session, *, staff: Staff, before: dict, payload: dict,
     submitter: User, source: str = SOURCE_ADMIN,
@@ -230,6 +285,16 @@ def submit_change(
     changed = diff_fields(before, payload)
     if not changed:
         return None, []
+
+    # [新增 2026-09-15] 幂等去重：同一次上传/保存被登记两次时复用已有待审记录，
+    # 避免审核列表出现重复条目（并返回原审核人，保证调用方行为不变）。
+    duplicate = _find_duplicate(db, employee_id=staff.employee_id, changed=changed)
+    if duplicate is not None:
+        logger.info(
+            "人员信息变更去重：复用已有待审记录 id=%s, 工号=%s, 字段=%s（本次来源=%s）",
+            duplicate.id, staff.employee_id, list(changed.keys()), source,
+        )
+        return duplicate, _reviewers_of(db, duplicate)
 
     level = resolve_level(changed.keys())
     reviewers = resolve_reviewers(
@@ -289,6 +354,9 @@ def submit_change(
 
     if reviewers:
         notify_reviewers(db, req, reviewers)
+    elif level == LEVEL_NONE and submitter.employee_id != staff.employee_id:
+        # [新增 2026-09-15] 免审的个人介绍类变更（改他人）：无需审核，仅通知被修改人
+        _notify_intro_updated(db, req, submitter)
     logger.info(
         "人员信息变更已登记: id=%s, 工号=%s, 级别=%s, 审核人=%s, 字段=%s",
         req.id, staff.employee_id, level, reviewers or note, list(changed.keys()),
@@ -297,57 +365,139 @@ def submit_change(
 
 
 def notify_reviewers(db: Session, req: StaffChangeRequest, reviewers: list[str]) -> None:
-    """站内信通知审核人（带跳转到审核页）"""
+    """站内信通知审核人（带跳转到审核页）
+
+    [调整 2026-09-15] 统一走通知中心（事件：staff_change.submitted），
+    管理员可在「通知设置」中开关该提醒、改写文案或调整收件人范围。
+    """
     try:
-        message_service.create_message(
-            db,
-            title=f"待审核：{req.staff_name or req.employee_id} 的信息变更",
-            content=(
-                f"{req.submitted_by_name or req.submitted_by} 提交了 "
-                f"{req.staff_name}（{req.employee_id} · {req.department}）的信息变更，"
-                f"需由{level_label(req.review_level)}审核：<br/>{req.change_summary}<br/>"
-                f"<b>该变更已立即生效</b>，审核不通过将回滚为修改前的值。"
-            ),
+        # 姓名兜底：主表姓名为空时用工号，避免渲染出 "None"
+        staff_name = req.staff_name or req.employee_id
+        submitter = req.submitted_by_name or req.submitted_by
+        level_text = level_label(req.review_level)
+        notification_center.emit(
+            db, "staff_change.submitted",
+            context={
+                "提交人": submitter,
+                "姓名": staff_name,
+                "工号": req.employee_id,
+                "科室": req.department,
+                "审核级别": level_text,
+                "变更内容": req.change_summary,
+            },
             recipients=reviewers,
-            sender_id=None,
-            msg_type=message_service.MSG_TYPE_SYSTEM,
+            department=req.department,
             # related_type=staff_change：站内信详情页据此渲染「去审核」按钮
             related_type="staff_change",
             related_id=req.id,
+            fallback_title=f"待审核：{staff_name} 的信息变更",
+            fallback_content=(
+                f"{submitter} 提交了 "
+                f"{staff_name}（{req.employee_id} · {req.department}）的信息变更，"
+                f"需由{level_text}审核：<br/>{req.change_summary}<br/>"
+                f"<b>该变更已立即生效</b>，审核不通过将回滚为修改前的值。"
+            ),
         )
     except Exception as e:  # 通知失败不影响主流程
         logger.warning("变更审核通知发送失败 id=%s: %s", req.id, e)
 
 
+def _notify_intro_updated(db: Session, req: StaffChangeRequest, submitter: User) -> None:
+    """[新增 2026-09-15] 个人介绍类字段被**他人**修改后，直接通知被修改人（免审，不派发审核任务）。
+
+    需求：科室管理员等任何有编辑权限的人员修改他人的「个人介绍」
+    （备注 / 专业擅长短·标准 / 社会任职 / 荣誉，即 LEVEL_NONE 免审字段）时，
+    无需审核、仅通知被修改人知悉（此前该场景完全静默，本人不知自己的介绍被改动）。
+
+    - 改自己：操作人即被修改人，不发送（避免自我打扰）；
+    - 走通知中心（事件：staff.intro_updated），可在「通知设置」中开关 / 改文案。
+    """
+    try:
+        operator_name = submitter.name or submitter.employee_id
+        staff_name = req.staff_name or req.employee_id
+        notification_center.emit(
+            db, "staff.intro_updated",
+            context={
+                "操作人": operator_name,
+                "姓名": staff_name,
+                "工号": req.employee_id,
+                "变更内容": req.change_summary,
+            },
+            # 显式收件人 = 被修改人本人（explicit 模式）
+            recipients=[req.employee_id],
+            department=req.department,
+            related_type="staff",
+            # 站内信详情页据此跳转到人员详情（Staff 主键即工号，无独立 id 字段）
+            related_id=int(req.employee_id) if req.employee_id.isdigit() else None,
+            fallback_title="您的个人介绍已被修改",
+            fallback_content=(
+                f"{operator_name} 修改了您的个人介绍"
+                f"（{staff_name} · {req.employee_id}）：<br/>{req.change_summary}"
+            ),
+        )
+    except Exception as e:  # 通知失败不影响主流程
+        logger.warning("个人介绍修改通知发送失败 id=%s: %s", req.id, e)
+
+
 def _notify_result(db: Session, req: StaffChangeRequest, *, ok: bool) -> None:
-    """审核结果通知提交人 + 被修改人"""
+    """审核结果通知提交人 + 被修改人
+
+    [调整 2026-09-15] 统一走通知中心：通过 = staff_change.approved，
+    驳回 = staff_change.rejected（含「回滚说明」变量），可分别开关与改文案。
+    """
     recipients = {req.submitted_by, req.employee_id}
+    recipients.discard(None)
     if not recipients:
         return
     try:
+        staff_name = req.staff_name or req.employee_id
+        reviewer = req.reviewed_by_name or req.reviewed_by
+        related_id = int(req.employee_id) if req.employee_id.isdigit() else None
+
         if ok:
-            title = f"信息变更已通过：{req.staff_name or req.employee_id}"
-            content = (
-                f"{req.reviewed_by_name or req.reviewed_by} 已通过 "
-                f"{req.staff_name}（{req.employee_id}）的信息变更：<br/>{req.change_summary}"
+            notification_center.emit(
+                db, "staff_change.approved",
+                context={
+                    "审核人": reviewer,
+                    "姓名": staff_name,
+                    "工号": req.employee_id,
+                    "变更内容": req.change_summary,
+                },
+                recipients=list(recipients),
+                department=req.department,
+                related_type="staff", related_id=related_id,
+                fallback_title=f"信息变更已通过：{staff_name}",
+                fallback_content=(
+                    f"{reviewer} 已通过 "
+                    f"{staff_name}（{req.employee_id}）的信息变更：<br/>{req.change_summary}"
+                ),
             )
         else:
-            title = f"信息变更被驳回：{req.staff_name or req.employee_id}"
             rollback = (
                 "相关信息已回滚为修改前的值。"
                 if req.rolled_back else
                 "（该信息在审核期间已被再次修改，未自动回滚，请联系管理员核对）"
             )
-            content = (
-                f"{req.reviewed_by_name or req.reviewed_by} 驳回了 "
-                f"{req.staff_name}（{req.employee_id}）的信息变更：<br/>{req.change_summary}<br/>"
-                f"驳回原因：{req.reject_reason}<br/>{rollback}"
+            notification_center.emit(
+                db, "staff_change.rejected",
+                context={
+                    "审核人": reviewer,
+                    "姓名": staff_name,
+                    "工号": req.employee_id,
+                    "变更内容": req.change_summary,
+                    "驳回原因": req.reject_reason,
+                    "回滚说明": rollback,
+                },
+                recipients=list(recipients),
+                department=req.department,
+                related_type="staff", related_id=related_id,
+                fallback_title=f"信息变更被驳回：{staff_name}",
+                fallback_content=(
+                    f"{reviewer} 驳回了 "
+                    f"{staff_name}（{req.employee_id}）的信息变更：<br/>{req.change_summary}<br/>"
+                    f"驳回原因：{req.reject_reason}<br/>{rollback}"
+                ),
             )
-        message_service.create_message(
-            db, title=title, content=content, recipients=list(recipients),
-            sender_id=None, msg_type=message_service.MSG_TYPE_SYSTEM,
-            related_type="staff", related_id=int(req.employee_id) if req.employee_id.isdigit() else None,
-        )
     except Exception as e:
         logger.warning("变更审核结果通知失败 id=%s: %s", req.id, e)
 
@@ -709,20 +859,30 @@ def sweep_overdue(db: Session) -> dict:
             )
             if reviewers:
                 try:
-                    message_service.create_message(
-                        db,
-                        title=f"审核超时升级：{req.staff_name or req.employee_id} 的信息变更",
-                        content=(
-                            f"{req.submitted_by_name or req.submitted_by} 提交的 "
-                            f"{req.staff_name}（{req.employee_id} · {req.department}）信息变更"
+                    # [调整 2026-09-15] 走通知中心（事件：staff_change.overdue_escalated）
+                    _name = req.staff_name or req.employee_id
+                    _submitter = req.submitted_by_name or req.submitted_by
+                    notification_center.emit(
+                        db, "staff_change.overdue_escalated",
+                        context={
+                            "提交人": _submitter,
+                            "姓名": _name,
+                            "工号": req.employee_id,
+                            "科室": req.department,
+                            "超时小时": ESCALATE_AFTER_HOURS,
+                            "变更内容": req.change_summary,
+                        },
+                        recipients=reviewers,
+                        department=req.department,
+                        related_type="staff_change",
+                        related_id=req.id,
+                        fallback_title=f"审核超时升级：{_name} 的信息变更",
+                        fallback_content=(
+                            f"{_submitter} 提交的 "
+                            f"{_name}（{req.employee_id} · {req.department}）信息变更"
                             f"已超过 {ESCALATE_AFTER_HOURS} 小时未审核，现升级由超级管理员处理："
                             f"<br/>{req.change_summary}"
                         ),
-                        recipients=reviewers,
-                        sender_id=None,
-                        msg_type=message_service.MSG_TYPE_SYSTEM,
-                        related_type="staff_change",
-                        related_id=req.id,
                     )
                 except Exception as e:
                     logger.warning("超时升级通知失败 id=%s: %s", req.id, e)
@@ -735,18 +895,23 @@ def sweep_overdue(db: Session) -> dict:
             )
             if reviewers:
                 try:
-                    message_service.create_message(
-                        db,
-                        title=f"待审核提醒：{req.staff_name or req.employee_id} 的信息变更",
-                        content=(
+                    # [调整 2026-09-15] 走通知中心（事件：staff_change.overdue_reminder）
+                    notification_center.emit(
+                        db, "staff_change.overdue_reminder",
+                        context={
+                            "姓名": req.staff_name or req.employee_id,
+                            "超时小时": REMIND_AFTER_HOURS,
+                            "变更内容": req.change_summary,
+                        },
+                        recipients=reviewers,
+                        department=req.department,
+                        related_type="staff_change",
+                        related_id=req.id,
+                        fallback_title=f"待审核提醒：{req.staff_name or req.employee_id} 的信息变更",
+                        fallback_content=(
                             f"您有一项待审核的人员信息变更已超过 {REMIND_AFTER_HOURS} 小时："
                             f"<br/>{req.change_summary}"
                         ),
-                        recipients=reviewers,
-                        sender_id=None,
-                        msg_type=message_service.MSG_TYPE_SYSTEM,
-                        related_type="staff_change",
-                        related_id=req.id,
                     )
                 except Exception as e:
                     logger.warning("超时提醒通知失败 id=%s: %s", req.id, e)

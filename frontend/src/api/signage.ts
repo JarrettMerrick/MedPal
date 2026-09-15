@@ -19,6 +19,8 @@ export interface Signage {
   campus?: string;
   building?: string;
   floor?: string;
+  /** [新增 2026-09-12] 所属区域（选填，多选用英文逗号分隔；仅「楼层导视/宣传」可填） */
+  area?: string;
   location_desc?: string;
   display_text_cn?: string;
   display_text_en?: string;
@@ -183,6 +185,19 @@ export interface SignageRepairRecord {
 // 查询某标识的全部维修记录（按发起时间倒序），权限与巡检历史一致（标识查看）
 export const getSignageRepairs = (signageId: number): Promise<SignageRepairRecord[]> =>
   api.get('/signage-alerts/repairs', { params: { signage_id: signageId } }).then((r) => r.data);
+
+// ============================================================
+// [新增 2026-09-14] 预警标识清单（标识标记页高亮预警标识用）
+// ============================================================
+export interface AlertedSignageItem {
+  id: number;
+  /** 该标识命中的预警类型（中文），用于在标记详情中说明预警原因 */
+  alerts: string[];
+}
+
+/** 处于预警状态的标识；判定口径与 /signage-alerts/summary 一致，但不做条数截断 */
+export const getAlertedSignages = (): Promise<AlertedSignageItem[]> =>
+  api.get('/signage-alerts/alerted-signage-ids').then((r) => r.data.items);
 
 // ============================================================
 // [新增 2026-09-09] 标识总览（/signage-overview）与维修记录（/signage-repairs）

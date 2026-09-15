@@ -29,6 +29,7 @@ from app.services.system_config_service import (
     ORG_LOGO_URL_KEY,
     ORG_NAME_CN_KEY,
     ORG_NAME_EN_KEY,
+    ORG_SLOGAN_KEY,
     SYSTEM_NAME_KEY,
     get_config_value,
     update_config,
@@ -65,6 +66,7 @@ def get_branding(db: Session) -> dict:
         org_name_cn / org_name_en：单位名称，未配置为空字符串；
         system_name：系统名称（固定取 `settings.app_name`，不落库）；
         logo_url：Logo 公开路径，未配置为空字符串；
+        slogan：宣传标语，未配置（或已被管理员清空）为空字符串，前端不渲染；
         updated_at：品牌配置最近更新时间（ISO 字符串，可能为 None）。
     """
     return {
@@ -74,6 +76,8 @@ def get_branding(db: Session) -> dict:
         # 未配置（为空）时回退到内置默认 settings.app_name，行为与改造前一致。
         "system_name": get_config_value(db, SYSTEM_NAME_KEY, "") or settings.app_name,
         "logo_url": get_config_value(db, ORG_LOGO_URL_KEY, ""),
+        # [新增 2026-09-12] 宣传标语：空字符串表示管理员主动清空，前端据此隐藏。
+        "slogan": get_config_value(db, ORG_SLOGAN_KEY, ""),
         "updated_at": _latest_updated_at(db),
     }
 

@@ -20,6 +20,8 @@ class SignageBase(BaseModel):
  campus:Optional[str]=None
  building:Optional[str]=None
  floor:Optional[str]=None
+ # [新增 2026-09-12] 所属区域（选填，支持多选）：仅「楼层导视/宣传」时可填，存区域名称、逗号分隔
+ area:Optional[str]=None
  location_desc:Optional[str]=None
  display_text_cn:Optional[str]=None
  display_text_en:Optional[str]=None
@@ -54,6 +56,8 @@ class SignageUpdate(BaseModel):
  campus:Optional[str]=None
  building:Optional[str]=None
  floor:Optional[str]=None
+ # [新增 2026-09-12] 所属区域（选填，支持多选，逗号分隔）
+ area:Optional[str]=None
  location_desc:Optional[str]=None
  display_text_cn:Optional[str]=None
  display_text_en:Optional[str]=None

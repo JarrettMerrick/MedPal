@@ -31,6 +31,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { hasPermission, PERM_STAFF_APPROVE, PERM_USER_APPROVE } from '../../utils/permissions';
 import PageContainer from '../../components/PageContainer';
 import PageHeader from '../../components/PageHeader';
+// [新增 2026-09-15] 红底白字待审角标 + 待审数量数据源（与左侧「信息审核」菜单同源）
+import ReviewCountBadge from '../../components/ReviewCountBadge';
+import { useReviewBadge } from '../../contexts/ReviewBadgeContext';
 import StaffChangeReview from './StaffChangeReview';
 
 const { Text } = Typography;
@@ -54,6 +57,8 @@ const formatTime = (value: string | null): string =>
 const RegistrationTable: React.FC = () => {
   const { message, modal } = App.useApp();
   const { token } = useToken();
+  // [新增 2026-09-15] 审核完成后刷新待审角标，使 Tab 与左侧菜单数字立即减少
+  const { refresh: refreshBadge } = useReviewBadge();
   const [status, setStatus] = useState<string>('pending');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -95,6 +100,7 @@ const RegistrationTable: React.FC = () => {
           await approveRegistration(record.id);
           message.success('已通过，账号已启用');
           load();
+          refreshBadge(); // [新增 2026-09-15] 待审角标即时减一
         } catch (err) {
           message.error(getErrorMessage(err, '操作失败'));
         } finally {
@@ -117,6 +123,7 @@ const RegistrationTable: React.FC = () => {
       setRejecting(null);
       setReason('');
       load();
+      refreshBadge(); // [新增 2026-09-15] 待审角标即时减一
     } catch (err) {
       message.error(getErrorMessage(err, '操作失败'));
     } finally {
@@ -256,6 +263,8 @@ const RegistrationTable: React.FC = () => {
 const RegistrationReview: React.FC = () => {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  // [新增 2026-09-15] 两个 Tab 各自的待审数量（与左侧「信息审核」菜单同源，红底白字展示）
+  const { registerCount, changeCount } = useReviewBadge();
   const canRegister = hasPermission(user, PERM_USER_APPROVE);
   const canChange = hasPermission(user, PERM_STAFF_APPROVE);
   const focusId = Number(searchParams.get('id')) || undefined;
@@ -276,12 +285,32 @@ const RegistrationReview: React.FC = () => {
 
   const items = [
     canRegister
-      ? { key: 'register', label: '账号注册审核', children: <RegistrationTable /> }
+      ? {
+          key: 'register',
+          // [新增 2026-09-15] 与左侧菜单同一原则：Tab 标题右侧显示本类待审条数（红底白字）
+          label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              账号注册审核
+              <ReviewCountBadge count={registerCount} />
+            </span>
+          ),
+          children: <RegistrationTable />,
+        }
       : null,
     canChange
-      ? { key: 'change', label: '信息变更审核', children: <StaffChangeReview focusId={focusId} /> }
+      ? {
+          key: 'change',
+          // [新增 2026-09-15] 变更审核同样展示自身的待审条数
+          label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              信息变更审核
+              <ReviewCountBadge count={changeCount} />
+            </span>
+          ),
+          children: <StaffChangeReview focusId={focusId} />,
+        }
       : null,
-  ].filter(Boolean) as { key: string; label: string; children: React.ReactNode }[];
+  ].filter(Boolean) as { key: string; label: React.ReactNode; children: React.ReactNode }[];
 
   return (
     <PageContainer>

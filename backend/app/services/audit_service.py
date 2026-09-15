@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import re
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
@@ -199,3 +200,134 @@ def build_change_summary(old_data: dict, new_data: dict, field_labels: dict = No
     if len(summary) > 500:
         summary = summary[:500] + "..."
     return summary
+
+
+# ==================== 修改历史查询（人员详情页 / 科室详情页「修改历史」入口） ====================
+# [新增 2026-09-15] 需求：两个详情页在「编辑」左侧提供修改历史查询，展示所修改的字段
+# 及修改前/修改后的对比，只展示最近三次修改。
+#
+# 数据来源保持单一：仍读取 record_modification 写入的 modification_history 表，
+# 仅做「读取 + 解析」，不改变任何写入逻辑。
+# 之所以解析 change_summary 而不是新增结构化列：该表已有历史数据，
+# 解析方案对存量记录同样生效，避免引入数据库结构变更与历史数据空白。
+
+#: 摘要中各字段变更之间的分隔符（与 build_change_summary 保持同源）
+_CHANGE_SEP = "；"
+#: 字段名与值之间的冒号（半角/全角均兼容），旧值用一个非贪婪匹配到第一个箭头
+_FIELD_CHANGE_RE = re.compile(
+    r"^(?P<label>[^:：]+)[:：]\s*(?P<before>.*?)\s*→\s*(?P<after>.*)$",
+    re.S,
+)
+#: build_change_summary 对空值使用的占位文案
+_EMPTY_PLACEHOLDER = "(空)"
+#: 无任何字段变化时的占位摘要，对使用者无信息量，直接过滤
+_NO_CHANGE_TEXT = "更新操作"
+
+
+def parse_change_summary(change_summary: str):
+    """把 change_summary 文本拆成「字段级前后对比」与「说明性文字」两部分。
+
+    build_change_summary 生成的格式为「标签: 旧值 → 新值；标签2: 旧值 → 新值」，
+    但同一个字段里也可能写入「新增人员: xxx(100001) 工种=doctor」这类没有箭头、
+    或「特色技术(新增1/删除0/修改2)」这类整体性描述，因此这里做二分处理：
+
+    - 能匹配「标签: 旧 → 新」的，作为字段级对比返回，供前端渲染三列表格；
+    - 匹配不上的，归入 notes 原样展示，避免丢失信息；
+    - 返回值中的空值统一转为空字符串，由前端决定显示为「（空）」，
+      避免把 '(空)' 这个内部占位文案透出到界面上。
+
+    返回 (fields, notes)：
+        fields: [{"label": "姓名", "before": "张三", "after": "李四"}, ...]
+        notes:  ["新增人员: 张三(100001) 工种=doctor", ...]
+    """
+    if not change_summary:
+        return [], []
+
+    fields = []
+    notes = []
+    for part in str(change_summary).split(_CHANGE_SEP):
+        text = part.strip()
+        if not text:
+            continue
+
+        matched = _FIELD_CHANGE_RE.match(text)
+        if matched:
+            before = matched.group("before").strip()
+            after = matched.group("after").strip()
+            fields.append({
+                "label": matched.group("label").strip(),
+                "before": "" if before == _EMPTY_PLACEHOLDER else before,
+                "after": "" if after == _EMPTY_PLACEHOLDER else after,
+            })
+        elif text != _NO_CHANGE_TEXT:
+            notes.append(text)
+
+    return fields, notes
+
+
+def get_modification_history(
+    db: Session,
+    entity_type: str,
+    entity_id: str,
+    limit: int = 3,
+) -> dict:
+    """查询某实体的最近 N 次修改记录（按修改时间倒序），并解析为字段级前后对比。
+
+    entity_type 与 record_modification 的取值保持一致：'staff' / 'department'；
+    entity_id 统一按字符串比较（人员为工号，科室为数字 ID 的字符串形式）。
+
+    返回值：
+        {
+          "items": [{
+              "id": 1,
+              "modified_at": "2026-09-15T02:30:00",   # UTC，前端按本地时区转换显示
+              "modified_by": "100001",                 # 操作人工号
+              "modified_by_name": "张三",               # 操作人姓名（查不到时回落为工号）
+              "fields": [{"label": ..., "before": ..., "after": ...}],
+              "notes": ["..."],
+              "summary": "原始摘要文本",
+          }, ...],
+          "total": 12,   # 该实体累计修改次数（用于提示「仅显示最近 3 次」）
+        }
+    """
+    base_query = db.query(ModificationHistory).filter(
+        ModificationHistory.entity_type == entity_type,
+        ModificationHistory.entity_id == str(entity_id),
+    )
+
+    # 总条数用于前端提示「共 N 条，仅显示最近 limit 条」
+    total = base_query.count()
+
+    rows = (
+        base_query
+        # 同一时刻可能写入多条（如批量操作），用 id 兜底保证顺序稳定
+        .order_by(ModificationHistory.modified_at.desc(), ModificationHistory.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    # 操作人姓名批量解析：modified_by 存的是工号，直接展示工号对使用者不友好
+    operator_ids = {row.modified_by for row in rows if row.modified_by}
+    name_map = {}
+    if operator_ids:
+        users = (
+            db.query(User.employee_id, User.name)
+            .filter(User.employee_id.in_(operator_ids))
+            .all()
+        )
+        name_map = {employee_id: name for employee_id, name in users}
+
+    items = []
+    for row in rows:
+        fields, notes = parse_change_summary(row.change_summary)
+        items.append({
+            "id": row.id,
+            "modified_at": row.modified_at.isoformat() if row.modified_at else None,
+            "modified_by": row.modified_by,
+            "modified_by_name": name_map.get(row.modified_by) or row.modified_by or "系统",
+            "fields": fields,
+            "notes": notes,
+            "summary": row.change_summary or "",
+        })
+
+    return {"items": items, "total": total}

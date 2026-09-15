@@ -46,6 +46,8 @@ SIGNAGE_COLUMNS = [
     ("campus", "院区"),
     ("building", "楼栋"),
     ("floor", "楼层"),
+    # [新增 2026-09-12] 具体区域（多选，逗号分隔）；表头用「区域」与 zone_type 的「所属区域」区分
+    ("area", "区域"),
     ("zone_type", "所属区域"),
     ("location_desc", "安装位置描述"),
     ("display_text_cn", "中文文本"),
@@ -114,7 +116,8 @@ def export_signages_xlsx(db, campus=None, building=None, category=None, status=N
         ws.append(_row_of(s))
     # 冻结表头并加宽列，便于查看
     ws.freeze_panes = "A2"
-    for i, w in enumerate([18, 22, 14, 12, 14, 18, 16, 16, 10, 16, 30, 30, 30, 12, 16, 20, 20, 12, 12, 12, 12], start=1):
+    # [调整 2026-09-12] 列宽随「区域」列新增同步补位（区域可多选、名称较长，给 22）
+    for i, w in enumerate([18, 22, 14, 12, 14, 18, 16, 16, 10, 22, 16, 30, 30, 30, 12, 16, 20, 20, 12, 12, 12, 12], start=1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
 
     output = io.BytesIO()
@@ -400,7 +403,8 @@ def cleanup_expired_exports() -> int:
 
 IMPORT_EXAMPLE = [
     "", "门诊大厅指引牌", "道路指引", "标识标牌", "铝型材", "600x400mm",
-    "南通瑞慈医院", "1号楼", "F1", "楼栋导视/宣传", "门诊大厅入口",
+    # [新增 2026-09-12] 「区域」列示例留空（选填；仅「楼层导视/宣传」时填写，多个用英文逗号分隔）
+    "南通瑞慈医院", "1号楼", "F1", "", "楼栋导视/宣传", "门诊大厅入口",
     "门诊大厅", "Outpatient Hall", "正常", "OA20260907001", "某某标识", "13800000000",
     "2026-09-07", "2027-09-07", "long_term", "",
 ]
@@ -414,7 +418,8 @@ def build_import_template() -> io.BytesIO:
     ws.append([label for _, label in SIGNAGE_COLUMNS])
     ws.append(IMPORT_EXAMPLE)
     ws.freeze_panes = "A2"
-    for i, w in enumerate([18, 22, 14, 12, 14, 18, 16, 16, 10, 16, 30, 30, 30, 12, 16, 20, 20, 12, 12, 12, 12], start=1):
+    # [调整 2026-09-12] 列宽随「区域」列新增同步补位（区域可多选、名称较长，给 22）
+    for i, w in enumerate([18, 22, 14, 12, 14, 18, 16, 16, 10, 22, 16, 30, 30, 30, 12, 16, 20, 20, 12, 12, 12, 12], start=1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
 
     info = wb.create_sheet("填写说明")
@@ -422,10 +427,11 @@ def build_import_template() -> io.BytesIO:
         "1. 请勿修改表头顺序与名称，从第 2 行开始填写数据；模板第 2 行为示例，导入前请删除或覆盖。",
         "2. 「名称」「分类」为必填项；「编码」留空时系统按 院区代号-分类编码-楼栋-楼层-序号 规则自动生成。",
         "3. 「类别」仅支持：标识标牌 / 平面宣传；「所属区域」仅支持：院区导视/宣传、楼栋导视/宣传、楼层导视/宣传。",
-        "4. 「状态」支持中文（正常/轻微破损/严重损坏/已拆除）或英文值（normal/damaged/severely_damaged/removed），留空默认「正常」。",
-        "5. 「有效期类型」仅支持：long_term（长期）/ temporary（临时）；临时标识必须填写「有效期至」（YYYY-MM-DD）。",
-        "6. 日期列格式：YYYY-MM-DD。",
-        "7. 编码已存在时该行跳过并在导入结果中提示；设计文件与现场照片需在创建后于详情页单独上传。",
+        "4. 「区域」为选填列，仅当「所属区域」为「楼层导视/宣传」时填写；多个区域用英文逗号分隔，如：东区,西区。",
+        "5. 「状态」支持中文（正常/轻微破损/严重损坏/已拆除）或英文值（normal/damaged/severely_damaged/removed），留空默认「正常」。",
+        "6. 「有效期类型」仅支持：long_term（长期）/ temporary（临时）；临时标识必须填写「有效期至」（YYYY-MM-DD）。",
+        "7. 日期列格式：YYYY-MM-DD。",
+        "8. 编码已存在时该行跳过并在导入结果中提示；设计文件与现场照片需在创建后于详情页单独上传。",
     ]
     for n in notes:
         info.append([n])
@@ -553,6 +559,8 @@ def import_signages_xlsx(db: Session, contents: bytes, created_by: str):
                 campus=campus,
                 building=building,
                 floor=floor,
+                # [新增 2026-09-12] 区域（选填，多选用英文逗号分隔）
+                area=_clean(cell(row, "area")),
                 zone_type=zone_type,
                 location_desc=_clean(cell(row, "location_desc")),
                 display_text_cn=_clean(cell(row, "display_text_cn")),

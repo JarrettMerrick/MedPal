@@ -26,10 +26,30 @@ from app.services.auth_service import reset_password, get_default_password
 from app.services.user_service import create_user, get_user, get_user_list, update_user
 # [修复 2026-09-01] 添加 record_audit 导入，用于记录密码重置等操作的审计日志
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：账号增删改 / 重置密码后通知管理方（超管 + 相关科室管理员）
+from app.services.modification_notify import notify_super_admins
 # [新增 2026-09-09] 统一 IP 获取（兼容反向代理）
 from app.utils import get_client_ip
 
 router = APIRouter(prefix="/api/users", tags=["用户管理"])
+
+
+def _fmt_user_value(field: str, value, role_labels: dict) -> str:
+    """把账号字段值转成可读文本（None 视为空）
+
+    [新增 2026-09-15] 修改历史与站内信直接展示 build_change_summary 生成的摘要，
+    若摘要里保留 role 代码（employee/dept_manager）或布尔原值（True/False），
+    使用者无法理解「被改成了什么」，因此统一在此转成中文可读文本。
+    """
+    if value is None:
+        return ""
+    if field == "role":
+        return role_labels.get(str(value), str(value))
+    if field == "is_active":
+        return "启用" if value else "停用"
+    if field == "must_change_password":
+        return "需改密" if value else "免改密"
+    return str(value)
 
 
 @router.get("", response_model=UserListResponse)
@@ -115,6 +135,42 @@ def create_user_endpoint(
    except Exception:
        pass
 
+   # [新增 2026-09-15] 新增账号后补发站内信（事件：新增用户账号）：
+
+   # 此前仅写系统日志/审计，管理方（超管 + 该账号所属科室的管理员）无任何主动知会。
+   # 自动排除操作者本人；若无人可收（如唯一超管自己建号），回落给操作者本人作为操作回执。
+   try:
+       operator = get_user(db, current_user.employee_id)
+       operator_name = operator.name if operator else current_user.employee_id
+       role_row = None
+       if user_in.role_id:
+           role_row = db.query(Role).filter(Role.id == user_in.role_id).first()
+       if role_row is None:
+           role_row = db.query(Role).filter(Role.name == user_in.role).first()
+       role_disp = (role_row.display_name or role_row.name) if role_row else user_in.role
+       notify_super_admins(
+           db,
+           title="新增账号",
+           content=(
+               f"{operator_name} 新增了用户账号 {user_in.name}({user_in.employee_id})，"
+               f"角色={role_disp}，科室={user_in.department or '未设置'}"
+           ),
+           related_type="user",
+           department=user_in.department,
+           exclude_user_id=current_user.employee_id,
+           event_code="user.created",
+           context={
+               "操作人": operator_name,
+               "姓名": user_in.name,
+               "工号": user_in.employee_id,
+               "角色": role_disp,
+               "变更内容": f"新增用户账号 {user_in.name}({user_in.employee_id})，角色={role_disp}",
+           },
+       )
+       db.commit()
+   except Exception:
+       pass
+
    return user
 
 
@@ -170,6 +226,21 @@ def update_user_endpoint(
                detail="系统必须保留至少一个超级管理员账号，无法禁用最后一个超级管理员",
            )
 
+   # [新增 2026-09-15] 变更前快照必须在「更新之前」取值：
+   # 原实现把 old_data 放在 update_user 之后构建，而 get_user / update_user
+   # 查询到的是同一 ORM 实例（identity map），快照读到的其实是新值，
+   # build_change_summary 因此恒判「无差异」→ 修改历史与站内信永远只有
+   # 「更新操作」，等于「改了却查不到改了什么」。现改为更新前先做快照，更新后取新值对比。
+   from app.services.audit_service import record_modification, build_change_summary
+   USER_FIELD_LABELS = {
+       "name": "姓名", "role": "角色", "department": "所属科室",
+       "is_active": "启用状态", "must_change_password": "需改密",
+       "user_type": "用户类型", "role_id": "角色ID",
+   }
+   # 摘要值可读化所需的角色显示名映射（employee → 普通员工 等）
+   role_labels = {r.name: (r.display_name or r.name) for r in db.query(Role).all()}
+   before_values = {k: getattr(old_user, k, None) for k in USER_FIELD_LABELS}
+
    # [改进] 捕获角色名称无效的错误
    try:
        user = update_user(db, employee_id, user_in)
@@ -179,15 +250,12 @@ def update_user_endpoint(
        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
    # 记录用户编辑审计日志
-   from app.services.audit_service import record_modification, build_change_summary
-   USER_FIELD_LABELS = {
-       "name": "姓名", "role": "角色", "department": "所属科室",
-       "is_active": "启用状态", "must_change_password": "需改密",
-       "user_type": "用户类型", "role_id": "角色ID",
-   }
-   old_data = {k: str(getattr(old_user, k, "")) for k in USER_FIELD_LABELS}
+   old_data = {k: _fmt_user_value(k, v, role_labels) for k, v in before_values.items()}
    update_data = user_in.model_dump(exclude_unset=True)
-   filtered_updates = {k: v for k, v in update_data.items() if k in USER_FIELD_LABELS}
+   filtered_updates = {
+       k: _fmt_user_value(k, getattr(user, k, None), role_labels)
+       for k in update_data if k in USER_FIELD_LABELS
+   }
    if filtered_updates:
        change_summary = build_change_summary(old_data, filtered_updates, USER_FIELD_LABELS)
        # [修复 2026-09-01] 传递客户端 IP 到 record_modification，记录到系统日志
@@ -197,6 +265,35 @@ def update_user_endpoint(
            modified_by=current_user.employee_id, change_summary=change_summary,
            ip_address=client_ip,
        )
+       # [新增 2026-09-15] 账号信息 / 状态变更后补发站内信（事件：账号信息 / 状态变更）：
+       # 角色调整、启用停用、科室变动均属高敏感操作，此前只写修改历史，
+       # 管理方（超管 + 相关科室管理员）无任何主动知会。
+       if change_summary and change_summary != "更新操作":
+           try:
+               mod_user = get_user(db, current_user.employee_id)
+               modifier_name = mod_user.name if mod_user else current_user.employee_id
+               notify_super_admins(
+                   db,
+                   title="账号被修改",
+                   content=(
+                       f"{modifier_name} 修改了用户账号 "
+                       f"{old_user.name}({employee_id})：{change_summary}"
+                   ),
+                   related_type="user",
+                   # 科室可能被改动：新旧科室的管理员都应知情，此处以新科室为准、
+                   # 空值回退旧科室（不再额外通知旧科室，避免收件人范围失控）。
+                   department=user.department or old_user.department,
+                   exclude_user_id=current_user.employee_id,
+                   event_code="user.updated",
+                   context={
+                       "操作人": modifier_name,
+                       "姓名": old_user.name,
+                       "工号": employee_id,
+                       "变更内容": change_summary,
+                   },
+               )
+           except Exception:
+               pass
 
    db.commit()
    return user
@@ -228,6 +325,31 @@ def reset_user_password(
        db.commit()
    except Exception:
        db.rollback()
+
+   # [新增 2026-09-15] 重置他人密码后补发站内信（事件：重置账号密码）：
+   # 管理端重置口令属账号安全敏感操作，此前只写审计日志，账号所属科室的管理员
+   # 与超管无任何主动知会（若有人盗用管理员账号批量改密，受害者与管理者都不会察觉）。
+   try:
+       mod_user = get_user(db, current_user.employee_id)
+       modifier_name = mod_user.name if mod_user else current_user.employee_id
+       notify_super_admins(
+           db,
+           title="账号密码被重置",
+           content=f"{modifier_name} 重置了用户账号 {user.name}({employee_id}) 的登录密码",
+           related_type="user",
+           department=user.department,
+           exclude_user_id=current_user.employee_id,
+           event_code="user.password_reset",
+           context={
+               "操作人": modifier_name,
+               "姓名": user.name,
+               "工号": employee_id,
+               "变更内容": f"重置用户账号 {user.name}({employee_id}) 的登录密码",
+           },
+       )
+       db.commit()
+   except Exception:
+       pass
    return {"message": "密码已重置", "password": new_password}
 
 
@@ -300,6 +422,36 @@ def delete_user_endpoint(
         record_audit(db, "user_delete", current_user.employee_id,
                      detail=f"name={user.name} dept={user.department}",
                      target=employee_id, ip_address=client_ip)
+    except Exception:
+        pass
+
+    # [新增 2026-09-15] 删除账号后补发站内信（事件：删除用户账号）：
+    # 账号删除不可逆（连带清理 Staff / 工牌 / 照片 / 收件记录），此前只写审计日志。
+    # 收件人 = 超管 + 该账号所属科室的管理员，自动排除操作者本人与被删账号本身；
+    # 无人可收时回落给操作者本人作为操作回执。
+    try:
+        mod_user = get_user(db, current_user.employee_id)
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title="删除账号",
+            content=(
+                f"{modifier_name} 删除了用户账号 {user.name}({employee_id})，"
+                f"科室={user.department or '未设置'}"
+            ),
+            related_type="user",
+            department=user.department,
+            exclude_user_id=current_user.employee_id,
+            # 被删账号本身不再接收通知（否则会收到「自己已被删除」的通知）
+            exclude_ids=[employee_id],
+            event_code="user.deleted",
+            context={
+                "操作人": modifier_name,
+                "姓名": user.name,
+                "工号": employee_id,
+                "变更内容": f"删除用户账号 {user.name}({employee_id})",
+            },
+        )
     except Exception:
         pass
 
@@ -388,16 +540,59 @@ def batch_create_users(
    except Exception:
        pass
 
+   # [新增 2026-09-15] 批量建号后补发站内信（事件：新增用户账号）：
+   # 一次操作可能新增数十个账号，此前只写审计日志，管理方不知情。
+   # 批量场景没有单一「相关科室」，故不传 department（收件人 = 全体超管，排除操作者本人）。
+   if created:
+       try:
+           operator = get_user(db, current_user.employee_id)
+           operator_name = operator.name if operator else current_user.employee_id
+           notify_super_admins(
+               db,
+               title="批量新建账号",
+               content=(
+                   f"{operator_name} 批量新建了 {created} 个员工账号"
+                   + (f"（跳过 {skipped} 个已存在账号）" if skipped else "")
+               ),
+               related_type="user",
+               exclude_user_id=current_user.employee_id,
+               event_code="user.created",
+               context={
+                   "操作人": operator_name,
+                   "姓名": f"批量新建 {created} 个账号",
+                   "工号": "批量",
+                   "角色": "普通员工",
+                   "变更内容": f"批量新建 {created} 个员工账号（跳过 {skipped} 个已存在账号）",
+               },
+           )
+           db.commit()
+       except Exception:
+           pass
+
    return {"created": created, "skipped": skipped, "message": f"成功创建 {created} 个账号，跳过 {skipped} 个已存在的账号"}
 
 
 @router.put("/profile/me")
 def update_my_profile(
     profile_in: ProfileUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # [新增 2026-09-15] 姓名变更留痕：此前该接口直接改字段、无任何审计记录
+    # （「改了却查不到」）。通知层面姓名变更走 auth.py /auth/profile 的审核派发路径，
+    # 此处不重复发信，仅补系统日志。
+    old_name = current_user.name
     if profile_in.name is not None:
         current_user.name = profile_in.name
     db.commit()
+    if profile_in.name is not None and profile_in.name != old_name:
+        try:
+            client_ip = get_client_ip(request)
+            record_audit(db, "profile_update", current_user.employee_id,
+                         detail=f"姓名: {old_name} → {profile_in.name}",
+                         target=current_user.employee_id, ip_address=client_ip)
+            db.commit()
+        except Exception:
+            db.rollback()
     return {"message": "修改成功"}

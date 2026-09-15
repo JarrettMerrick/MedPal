@@ -11,9 +11,33 @@ from typing import Optional, List
 from datetime import datetime
 # [新增 2026-09-09] 供应商写操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：供应商信息变更后通知管理方
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 
 router = APIRouter(prefix="/api/suppliers", tags=["供应商管理"])
+
+
+def _notify_supplier_change(db: Session, current_user: User, obj_label: str, summary: str) -> None:
+    """[新增 2026-09-15] 供应商变更站内信（失败静默）
+
+    供应商信息（名称/类型/联系方式）此前只留痕不提醒，管理方无从知晓；
+    在每个写端点留痕后统一补发站内信（事件：supplier.changed）。
+    """
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"供应商变更：{obj_label}",
+            content=f"{modifier_name} {summary}",
+            related_type="supplier",
+            exclude_user_id=current_user.employee_id,
+            event_code="supplier.changed",
+            context={"操作人": modifier_name, "对象": obj_label, "变更内容": summary},
+        )
+        db.commit()
+    except Exception: pass
 
 
 # 数据模型
@@ -139,6 +163,11 @@ def create_supplier(
                      detail=f"name={item.name}, type={item.type}", target=str(item.id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：supplier.changed）
+    _notify_supplier_change(
+        db, current_user, item.name,
+        f"新增了供应商「{item.name}」（类型 {item.type}）",
+    )
     return item
 
 
@@ -178,6 +207,12 @@ def update_supplier(
                      detail=f"name={item.name}", target=str(supplier_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：supplier.changed；无实际字段变化时不发）
+    if update_data:
+        _notify_supplier_change(
+            db, current_user, item.name,
+            "修改了供应商「{}」（字段：{}）".format(item.name, "、".join(update_data.keys())),
+        )
     return item
 
 
@@ -204,4 +239,6 @@ def delete_supplier(
                      detail=f"name={name}", target=str(supplier_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：supplier.changed）
+    _notify_supplier_change(db, current_user, name, f"删除了供应商「{name}」")
     return {"message": "删除成功"}

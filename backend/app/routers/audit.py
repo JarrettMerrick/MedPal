@@ -12,9 +12,16 @@
       超级管理员 + 相关科室管理员（见 services/modification_notify.py）；
     - 收件人用站内信自带的已读 / 星标 / 归档 / 自定义标签完成"已知悉"标记。
 
-本路由现仅保留**系统日志**相关接口（查询 / 导出 / 清理，权限 system.audit）。
-字段级修改留痕仍由 services/audit_service.record_modification 写入
-（同时双写 SystemLog），仅不再提供专门的查询界面。
+本路由现保留**系统日志**相关接口（查询 / 导出 / 清理，权限 system.audit）。
+
+[新增 2026-09-15] 追溯性查询回归
+================================
+新增 `GET /api/audit/history/{entity_type}/{entity_id}`：人员 / 科室详情页的
+「修改历史」按钮用它读取最近三次修改的字段级前后对比。
+与原 `/api/audit/{entity_type}/{entity_id}` 的区别：
+    - 只读、不做「确认 / 知悉」动作，不恢复已被站内信替代的信息修改流程；
+    - 只返回最近 3 条（需求指定），并按详情页的权限与数据范围校验访问资格。
+字段级修改留痕仍由 services/audit_service.record_modification 写入（同时双写 SystemLog）。
 """
 
 from datetime import datetime, timedelta
@@ -24,15 +31,90 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, has_permission, PERM_SYSTEM_AUDIT
+from app.dependencies import (
+    get_current_user,
+    has_permission,
+    can_access_staff,
+    has_department_access,
+    PERM_SYSTEM_AUDIT,
+    PERM_STAFF_VIEW,
+    PERM_DEPT_VIEW,
+    # [新增 2026-09-15] 修改历史独立权限（默认仅超级管理员拥有）
+    PERM_STAFF_VIEW_HISTORY,
+    PERM_DEPT_VIEW_HISTORY,
+)
+from app.models.department import Department
+from app.models.staff import Staff
 from app.models.system_log import SystemLog
 from app.models.user import User
+from app.services.audit_service import get_modification_history
 from app.utils import utc_now
 
 router = APIRouter(prefix="/api/audit", tags=["系统日志"])
 
 CATEGORY_LABELS = {"operation": "操作日志", "system": "系统日志", "error": "错误日志"}
 LEVEL_LABELS = {"INFO": "信息", "WARN": "警告", "ERROR": "错误"}
+
+#: [新增 2026-09-15] 修改历史返回条数：需求要求「只保留最近三次修改」，
+#: 故默认值与上限同为 3（保留 limit 入参是为了让该口径有唯一可调入口）。
+HISTORY_LIMIT = 3
+
+
+@router.get("/history/{entity_type}/{entity_id}")
+def get_entity_modification_history(
+    entity_type: str,
+    entity_id: str,
+    limit: int = Query(HISTORY_LIMIT, ge=1, le=HISTORY_LIMIT, description="返回最近几条修改记录（最多 3 条）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """查询人员 / 科室的最近修改记录（含字段级修改前 / 修改后对比）
+
+    [新增 2026-09-15] 供人员详情页、科室详情页的「修改历史」按钮调用。
+
+    权限与数据范围：
+        - staff：需 staff.view + staff.view_history（修改历史，默认仅超管），
+          本人可查自己，查他人需在其科室 + 工种数据范围内；
+        - department：需 department.view + department.view_history（修改历史，默认仅超管），
+          且该科室在其数据范围内。
+    固定只返回最近 3 条（按修改时间倒序），更早的记录请通过系统日志追溯。
+    """
+    if entity_type == "staff":
+        if not has_permission(current_user, PERM_STAFF_VIEW):
+            raise HTTPException(status_code=403, detail="权限不足")
+        # [新增 2026-09-15] 「修改历史」独立权限（默认仅超级管理员拥有）：
+        # 变更追溯属敏感能力，与查看详情分开授权，可在「角色管理 → 人员管理 → 修改历史」中配置。
+        if not has_permission(current_user, PERM_STAFF_VIEW_HISTORY):
+            raise HTTPException(status_code=403, detail="无「修改历史」查看权限")
+        staff = db.query(Staff).filter(Staff.employee_id == entity_id).first()
+        if not staff:
+            raise HTTPException(status_code=404, detail="人员不存在")
+        # 与 get_staff_detail 一致：本人可查看自己，他人需在数据范围内（防跨科室 PHI 泄露）
+        if entity_id != current_user.employee_id and not can_access_staff(
+            current_user, staff.work_type, staff.department, db
+        ):
+            raise HTTPException(status_code=403, detail="无权查看该人员信息")
+    elif entity_type == "department":
+        if not has_permission(current_user, PERM_DEPT_VIEW):
+            raise HTTPException(status_code=403, detail="权限不足")
+        # [新增 2026-09-15] 「修改历史」独立权限（默认仅超级管理员拥有），
+        # 可在「角色管理 → 科室管理 → 修改历史」中按角色授予/回收。
+        if not has_permission(current_user, PERM_DEPT_VIEW_HISTORY):
+            raise HTTPException(status_code=403, detail="无「修改历史」查看权限")
+        try:
+            dept_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="科室 ID 无效")
+        dept = db.query(Department).filter(Department.id == dept_id).first()
+        if not dept:
+            raise HTTPException(status_code=404, detail="科室不存在")
+        if not has_department_access(current_user, dept.name, db):
+            raise HTTPException(status_code=403, detail="无权查看该科室信息")
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的实体类型: {entity_type}")
+
+    result = get_modification_history(db, entity_type, entity_id, limit)
+    return {**result, "limit": limit}
 
 
 @router.get("/system-logs")

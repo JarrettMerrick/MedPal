@@ -30,9 +30,54 @@ from app.schemas.registration import RegistrationReject, RegistrationSubmit
 from app.services import registration_service
 from app.services.audit_service import audit_action
 from app.services.auth_service import is_rate_limited, record_rate_attempt
+# [新增 2026-09-15] 站内信提醒：注册申请提交提醒超管审核 / 审核结果通知申请人
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 
 router = APIRouter(tags=["账号注册"])
+
+
+# [新增 2026-09-15] 注册申请与审核结果站内信（失败静默，不影响注册与审核主流程）
+def _notify_submitted(db: Session, employee_id: str, name: str, department: str) -> None:
+    """提交注册申请后提醒超级管理员（事件：registration.submitted，不回落给申请人）"""
+    try:
+        notify_super_admins(
+            db,
+            title=f"新的注册申请：{name}",
+            content=f"{name}（{employee_id} · {department or '-'}）提交了账号注册申请，请前往「用户管理」审核。",
+            related_type="user",
+            event_code="registration.submitted",
+            context={"操作人": name, "姓名": name, "工号": employee_id,
+                     "科室": department or "-", "变更内容": "提交注册申请"},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _notify_reviewed(
+    db: Session, reviewer: User, employee_id: str, applicant_name: str,
+    approved: bool, reason: str | None = None,
+) -> None:
+    """审核结果通知申请人（事件：registration.reviewed，explicit 收件人=申请人工号）"""
+    try:
+        reviewer_name = getattr(reviewer, "name", None) or reviewer.employee_id
+        result_label = "通过" if approved else "拒绝"
+        note = "" if approved else f"，原因：{reason or '未说明'}"
+        notify_super_admins(
+            db,
+            title=f"注册申请{result_label}：{applicant_name}",
+            content=f"{reviewer_name} {result_label}了 {applicant_name}（{employee_id}）的账号注册申请{note}",
+            related_type="user",
+            event_code="registration.reviewed",
+            context={"审核人": reviewer_name, "姓名": applicant_name, "工号": employee_id,
+                     "结果": result_label, "说明": note,
+                     "变更内容": f"注册申请{result_label}"},
+            recipients=[employee_id],
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # ---------------- 内部工具 ----------------
@@ -102,6 +147,8 @@ def submit_registration(
     audit_action(db, "registration_submit", payload.employee_id, request,
                  detail=f"dept={payload.department}, work_type={payload.work_type}",
                  target=payload.employee_id)
+    # [新增 2026-09-15] 补发站内信：提醒超级管理员审核
+    _notify_submitted(db, payload.employee_id, payload.name, payload.department)
     return result
 
 
@@ -159,6 +206,8 @@ def approve_registration_request(
     audit_action(db, "registration_approve", current_user.employee_id, request,
                  detail=f"employee_id={req.employee_id}, dept={req.department}",
                  target=req.employee_id)
+    # [新增 2026-09-15] 补发站内信：审核结果通知申请人
+    _notify_reviewed(db, current_user, req.employee_id, req.name, True)
     return {"message": "已通过，账号已启用", "employee_id": req.employee_id}
 
 
@@ -182,4 +231,6 @@ def reject_registration_request(
     audit_action(db, "registration_reject", current_user.employee_id, request,
                  detail=f"employee_id={req.employee_id}, reason={payload.reason}",
                  target=req.employee_id)
+    # [新增 2026-09-15] 补发站内信：审核结果通知申请人
+    _notify_reviewed(db, current_user, req.employee_id, req.name, False, payload.reason)
     return {"message": "已驳回"}

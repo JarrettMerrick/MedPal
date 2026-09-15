@@ -21,7 +21,11 @@ import { parseExpertiseParagraphs } from '../../utils/expertiseParagraphs';
 // [修复 2026-09-02] P4: 导入统一错误处理函数
 import { getErrorMessage } from '../../utils/format';
 import { WORK_TYPE_LABELS, WORK_TYPE_COLOR } from '../../types/staff';
-import { hasPermission, PERM_STAFF_EDIT, PERM_STAFF_DELETE, PERM_STAFF_STATUS } from '../../utils/permissions';
+// [调整 2026-09-15] 新增导入 PERM_CARD_UPLOAD：工卡「确认/拒绝」由仅依赖后端 can_confirm 改为前端显式权限判定
+// [调整 2026-09-15] 新增导入 PERM_STAFF_VIEW / PERM_STAFF_VIEW_HISTORY：修改历史按钮与后端接口权限保持一致
+import { hasPermission, PERM_STAFF_EDIT, PERM_STAFF_DELETE, PERM_STAFF_STATUS, PERM_CARD_UPLOAD, PERM_STAFF_VIEW, PERM_STAFF_VIEW_HISTORY } from '../../utils/permissions';
+// [新增 2026-09-15] 修改历史查询按钮：查看最近三次修改的字段级前后对比
+import ModificationHistoryButton from '../../components/ModificationHistoryButton';
 // [新增 2026-09-11] 人员信息变更审核：详情页显著位置提示「XX 未审核」+ 就地追认/驳回
 import { listStaffChangesByStaff, type StaffChangeItem } from '../../api/staffChanges';
 import StaffChangeNotice from '../../components/StaffChangeNotice';
@@ -91,6 +95,16 @@ const StaffDetail: React.FC = () => {
   const canEdit = hasPermission(user, PERM_STAFF_EDIT) || isSelf;
   const canDelete = hasPermission(user, PERM_STAFF_DELETE);
   const canChangeStatus = hasPermission(user, PERM_STAFF_STATUS);
+  // [新增 2026-09-15] 工卡「确认/拒绝」显式权限判定（与后端 _can_confirm_card 语义对齐）：
+  // 1) 员工本人可确认/拒绝自己的工卡；
+  // 2) 持有 card.upload（工卡上传）权限者，可确认/拒绝管辖范围内人员的工卡。
+  // 说明：管辖范围（科室作用域）前端无法完全复刻，故仍与后端返回的 card.can_confirm 取交集，
+  // 形成「前端显式权限 + 后端权威判定」双重门禁，避免无权限用户看到可操作的按钮。
+  const canConfirmCard = !!isSelf || hasPermission(user, PERM_CARD_UPLOAD);
+  // [调整 2026-09-15] 修改历史查询入口的显隐：与后端 /api/audit/history 校验一致——
+  // 需 staff.view + staff.view_history（「修改历史」独立权限，默认仅超级管理员拥有），
+  // 避免无权限用户看到按钮、点击后报 403
+  const canViewHistory = hasPermission(user, PERM_STAFF_VIEW) && hasPermission(user, PERM_STAFF_VIEW_HISTORY);
 
   // [改进] 获取来源页面URL，用于返回按钮恢复原始状态
   const returnTo = (location.state as any)?.returnTo as string | undefined;
@@ -257,6 +271,14 @@ const StaffDetail: React.FC = () => {
         onBack={() => navigate(returnTo || '/staff')}
         extra={(
           <Space>
+            {/* [新增 2026-09-15] 修改历史查询：置于「编辑」左侧，展示最近三次修改的字段级前后对比 */}
+            {canViewHistory && (
+              <ModificationHistoryButton
+                entityType="staff"
+                entityId={staff.employee_id}
+                entityName={staff.name}
+              />
+            )}
             {canEdit && <Button icon={<EditOutlined />} onClick={() => navigate(`/staff/edit/${staff.employee_id}`, { state: { returnTo } })}>编辑</Button>}
             {canChangeStatus && (
               <Button
@@ -392,7 +414,9 @@ const StaffDetail: React.FC = () => {
                           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', borderRadius: token.borderRadius, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: token.marginSM, opacity: 0 }}>
                             <Button size="small" ghost icon={<EyeOutlined />} onClick={() => cardImageRefs.current[card.id]?.preview()}>预览</Button>
                             <Button size="small" ghost icon={<DownloadOutlined />} onClick={() => downloadImage(card.card_photo, 'card')}>下载</Button>
-                            {card.status === 'pending' && card.can_confirm && (
+                            {/* [调整 2026-09-15] 显式权限判定 canConfirmCard 前置 + 后端 can_confirm（含管辖范围）收敛：
+                                无 card.upload 权限且非本人时，确认/拒绝按钮直接不渲染 */}
+                            {card.status === 'pending' && canConfirmCard && card.can_confirm && (
                               <>
                                 <Button size="small" ghost icon={<CheckOutlined />} onClick={() => handleConfirmCard(card.id)}>确认</Button>
                                 <Button size="small" danger ghost icon={<CloseOutlined />} onClick={() => handleRejectCard(card.id)}>拒绝</Button>

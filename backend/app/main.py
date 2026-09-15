@@ -8,13 +8,15 @@ import sys
 import uuid
 import time as _time
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 from app.config import settings, PROJECT_ROOT, DATA_ROOT
-from app.routers import auth, staff, users, departments, audit, roles, data_io, uploads, staff_cards, notifications, messages, chunk_upload, system_config, regulations, user_department_scope, signages, floor_plans, signage_alerts, signage_export, signage_batch, campus, signage_categories, suppliers, signage_inspections, signage_repairs, branding, registration, account_settings, staff_change
+from app.routers import auth, staff, users, departments, audit, roles, data_io, uploads, staff_cards, notifications, messages, chunk_upload, system_config, regulations, user_department_scope, signages, floor_plans, signage_alerts, signage_export, signage_batch, campus, signage_categories, suppliers, signage_inspections, signage_repairs, branding, registration, account_settings, staff_change, feature_settings, notification_settings
+# [新增 2026-09-14] 功能开关的接口层依赖（见下方 include_router 的 dependencies 参数）
+from app.dependencies import require_feature_enabled
 from app.utils import get_client_ip
 
 # ── 运行日志（应用内部日志） ──────────────────────────────────────────
@@ -89,6 +91,9 @@ OPERATION_MAP = [
     ("/api/public/registration",     "自助注册"),
     ("/api/registration-requests",   "账号审核"),
     ("/api/account-settings",        "账号设置"),
+    # [新增 2026-09-14] 功能开关（公开特性读取 + 设置页汇总）
+    ("/api/public/features",         "功能开关"),
+    ("/api/feature-settings",        "功能开关"),
     ("/api/regulations/",            "制度管理"),
     ("/api/signages/",               "标识管理"),
     ("/api/floor-plans/",            "平面图管理"),
@@ -266,6 +271,8 @@ async def enforce_password_change(request, call_next):
         # [新增 2026-09-10] 登录页自助注册：选项读取与申请提交均免登录
         "/api/public/registration/options",
         "/api/public/registration",
+        # [新增 2026-09-14] 功能开关公开读取：登录页/首屏即需据此决定入口显隐
+        "/api/public/features",
     }
     if path in PUBLIC_PATHS:
         return await call_next(request)
@@ -361,6 +368,15 @@ async def enforce_password_change(request, call_next):
 
 
 # 注册路由
+#
+# [新增 2026-09-14] 功能开关（系统设置 → 功能开关）的接口层强制：
+# 功能被管理员关闭后，该模块**所有**接口统一返回 403，避免仅靠前端隐藏菜单而被绕过。
+# 用 include_router(dependencies=...) 集中声明而非逐个接口挂载 —— 新增接口自动受控、不会漏挂。
+_FEATURE_MESSAGES_DEPS = [Depends(require_feature_enabled("messages"))]
+_FEATURE_SIGNAGE_DEPS = [Depends(require_feature_enabled("signage"))]
+# [新增 2026-09-14] 制度牌（制度管理）
+_FEATURE_REGULATION_DEPS = [Depends(require_feature_enabled("regulation"))]
+
 app.include_router(auth.router)
 app.include_router(staff.router)
 app.include_router(users.router)
@@ -372,7 +388,8 @@ app.include_router(uploads.router)
 app.include_router(staff_cards.router)
 app.include_router(notifications.router)
 # [新增 2026-09-11] 站内信（统一消息中心：系统通知 + 群发/私发 + 标注）
-app.include_router(messages.router)
+# [调整 2026-09-14] 受功能开关 feature_messages_enabled 控制
+app.include_router(messages.router, dependencies=_FEATURE_MESSAGES_DEPS)
 app.include_router(chunk_upload.router)
 app.include_router(system_config.router)
 # [新增 2026-09-10] 品牌设置路由（公开品牌读取 + Logo 上传/重置）
@@ -382,22 +399,31 @@ app.include_router(account_settings.router)
 app.include_router(registration.router)
 # [新增 2026-09-11] 人员信息变更审核（立即生效 + 追认/回滚；站内信「去审核」跳转）
 app.include_router(staff_change.router)
-app.include_router(regulations.router)
-app.include_router(signages.router)
-app.include_router(floor_plans.router)
-app.include_router(signage_alerts.router)
-app.include_router(signage_export.router)
-app.include_router(signage_batch.router)
+# [调整 2026-09-14] 制度牌（制度管理）受功能开关 feature_regulation_enabled 控制
+app.include_router(regulations.router, dependencies=_FEATURE_REGULATION_DEPS)
+# [新增 2026-09-14] 功能开关：公开特性读取 + 设置页汇总（自身不受开关控制）
+app.include_router(feature_settings.router)
+# [新增 2026-09-15] 通知设置（系统设置 → 通知设置：事件级开关 / 文案模板 / 收件人规则）
+# 自身不受功能开关控制；权限为独立权限点 feature.notification（「系统设置」分类下的「通知设置」项）
+app.include_router(notification_settings.router)
+# ── 以下均属「标识平面」或「标识设置」，统一受 feature_signage_enabled 单一开关控制 ──
+# （对应需求：将标识平面与标识设置合并为单一开关）
+app.include_router(signages.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(floor_plans.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(signage_alerts.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(signage_export.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(signage_batch.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+# 注意：user_department_scope 属「用户/角色」范畴（角色管理的数据范围配置），不随标识开关关闭
 app.include_router(user_department_scope.router)
 # [修复 2026-09-03] 注册院区管理路由
-app.include_router(campus.router)
+app.include_router(campus.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 # [修复 2026-09-04] 注册标识分类和供应商路由
-app.include_router(signage_categories.router)
-app.include_router(suppliers.router)
+app.include_router(signage_categories.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(suppliers.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 # [新增 2026-09-05] 注册标识巡检路由（移动端巡检打卡与历史查询）
-app.include_router(signage_inspections.router)
+app.include_router(signage_inspections.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 # [新增 2026-09-09] 标识维修记录（查看全部维修记录并按条件导出，权限 signage.repair）
-app.include_router(signage_repairs.router)
+app.include_router(signage_repairs.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 
 
 # ── 全局未处理异常处理器 ────────────────────────────────────────────
@@ -584,16 +610,10 @@ def startup():
             # 已存在超级管理员则跳过，不改动任何既有账号。
             init_default_admin(db)
             db.commit()  # 提交角色/权限等初始数据到数据库
-            # [新增 2026-09-11] 旧通知一次性并入站内信（幂等：以配置标记位控制，仅执行一次）
-            try:
-                from app.services.message_service import migrate_notifications_to_messages
-                moved = migrate_notifications_to_messages(db)
-                db.commit()
-                if moved:
-                    logger.info(f"已把 {moved} 条历史通知并入站内信")
-            except Exception as mig_err:
-                db.rollback()
-                logger.warning(f"历史通知迁移失败（不影响启动，下次启动会重试）: {mig_err}")
+            # [调整 2026-09-15] 按需求**取消**「旧通知并入站内信」的一次性迁移：
+            # 历史 notifications 表数据保持原样（不再写入 messages），启动时也不再执行迁移。
+            # （迁移函数仍保留在 services/message_service.migrate_notifications_to_messages，
+            #   如后续确需导入历史通知，可在运维时手动调用。）
             # [新增 2026-09-11] 人员信息变更审核：启动时扫描一次超时未审的变更
             # （24h 提醒审核人 / 72h 升级超管；日常由列表接口惰性触发）
             try:

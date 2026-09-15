@@ -16,9 +16,34 @@ from app.schemas.regulation import (
     RegulationHistoryOut, RegulationHistoryDetailOut,
 )
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：制度 / 制度分类变更后通知管理方
+from app.services.modification_notify import notify_super_admins
 from app.utils import utc_now, get_client_ip
 
 router = APIRouter(prefix="/api/regulations", tags=["制度管理"])
+
+
+def _notify_regulation_change(db: Session, current_user: User, obj_label: str, summary: str) -> None:
+    """[新增 2026-09-15] 制度变更站内信（制度 / 分类共用出口，失败静默）
+
+    制度与分类的增删改此前只留痕不提醒，管理方无从知晓制度库变化；
+    在每个写端点留痕后统一补发站内信（事件：regulation.changed）。
+    """
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"制度变更：{obj_label}",
+            content=f"{modifier_name} {summary}",
+            related_type="regulation",
+            exclude_user_id=current_user.employee_id,
+            event_code="regulation.changed",
+            context={"操作人": modifier_name, "对象": obj_label, "变更内容": summary},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # ==================== 类别管理 ====================
@@ -59,6 +84,11 @@ def create_category(
         db.commit()
     except Exception:
         db.rollback()
+    # [新增 2026-09-15] 补发站内信（事件：regulation.changed）
+    _notify_regulation_change(
+        db, current_user, f"分类「{cat.name}」",
+        f"新增了制度分类「{cat.name}」（代码 {cat.code}）",
+    )
     return cat
 
 
@@ -87,6 +117,8 @@ def delete_category(
         db.commit()
     except Exception:
         db.rollback()
+    # [新增 2026-09-15] 补发站内信（事件：regulation.changed）
+    _notify_regulation_change(db, current_user, f"分类「{cat_name}」", f"删除了制度分类「{cat_name}」")
     return {"message": "删除成功"}
 
 
@@ -138,6 +170,11 @@ def update_category(
             db.commit()
         except Exception:
             db.rollback()
+        # [新增 2026-09-15] 补发站内信（事件：regulation.changed；仅在字段确有变化时发送）
+        _notify_regulation_change(
+            db, current_user, f"分类「{cat.name}」",
+            "修改了制度分类「{}」：{}".format(cat.name, "；".join(changes)),
+        )
     return cat
 
 
@@ -252,6 +289,11 @@ def create_regulation(
         db.commit()
     except Exception:
         db.rollback()
+    # [新增 2026-09-15] 补发站内信（事件：regulation.changed）
+    _notify_regulation_change(
+        db, current_user, f"制度「{reg.name}」",
+        f"新增了制度「{reg.name}」（版本 {version}）",
+    )
     return reg
 
 
@@ -319,6 +361,11 @@ def update_regulation(
             db.commit()
         except Exception:
             db.rollback()
+        # [新增 2026-09-15] 补发站内信（事件：regulation.changed；仅在字段确有变化时发送）
+        _notify_regulation_change(
+            db, current_user, f"制度「{reg.name}」",
+            "修改了制度「{}」（版本 {}）：{}".format(reg.name, new_version, "；".join(changes)),
+        )
     return reg
 
 
@@ -376,4 +423,6 @@ def delete_regulation(
         db.commit()
     except Exception:
         db.rollback()
+    # [新增 2026-09-15] 补发站内信（事件：regulation.changed）
+    _notify_regulation_change(db, current_user, f"制度「{reg_name}」", f"删除了制度「{reg_name}」")
     return {"message": "删除成功"}

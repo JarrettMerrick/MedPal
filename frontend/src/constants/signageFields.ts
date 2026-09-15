@@ -15,6 +15,8 @@ export const SIGNAGE_FIELD_LABELS: Record<string, string> = {
   campus: '院区',
   building: '楼栋',
   floor: '楼层',
+  // [新增 2026-09-12] 具体区域（多选，逗号分隔）；与 zone_type 的「所属区域」区分显示
+  area: '区域',
   zone_type: '所属区域',
   location_desc: '安装位置描述',
   display_text_cn: '中文文本',

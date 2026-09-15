@@ -265,8 +265,46 @@ def get_all_alerts(db):
                 } for d in overdue[:10]
             ],
             "temporary_expiring": [
-                {"id": s.id, "code": s.code, "name": s.name, "validity_until": str(s.validity_until)}
+                {
+                    "id": s.id, "code": s.code, "name": s.name,
+                    "validity_until": str(s.validity_until),
+                    # [新增 2026-09-14] 剩余天数（负数 = 已过期天数）。
+                    # 本列表口径为 validity_until <= 今天+7，**同时包含已过期项**，
+                    # 前端据此区分「N 天后过期」与「已过期 N 天」，
+                    # 避免已过期很久的标识被笼统显示为"即将过期"。
+                    "days_left": (s.validity_until - beijing_today()).days,
+                }
                 for s in expiring[:10]
             ],
         },
     }
+
+
+def get_alerted_signage_map(db) -> dict:
+    """[新增 2026-09-14] 汇总「处于预警状态的标识」→ 预警类型列表。
+
+    用途：标识标记页需要把预警标识以醒目样式（红色方框 + 感叹号）渲染在平面图上。
+
+    与 get_all_alerts 的关系：
+      - 预警口径**完全一致**（同样这五类），避免两处判定出现分歧；
+      - 但 get_all_alerts 的 details 每类只取前 10 条（供预警页摘要展示），
+        若复用它做地图高亮会漏标，故此处返回**全量**。
+
+    返回：{ 标识ID: [预警类型中文名, ...] }
+    """
+    result: dict = {}
+
+    def add(signage_id, label: str) -> None:
+        result.setdefault(signage_id, []).append(label)
+
+    for s in get_abnormal_status(db):
+        add(s.id, "状态异常")
+    for _rec, s in get_repairs_in_progress(db):
+        add(s.id, "维修处理中")
+    for d in get_inspections_due_soon(db):
+        add(d["signage"].id, "7天内巡检到期")
+    for d in get_inspections_overdue(db):
+        add(d["signage"].id, "巡检已超期")
+    for s in get_expiring_validity(db):
+        add(s.id, "临时标识有效期提醒")
+    return result

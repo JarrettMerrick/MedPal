@@ -11,6 +11,8 @@ from app.dependencies import (
     get_current_user,
     has_permission,
     PERM_STAFF_EDIT,
+    # [新增 2026-09-15] 照片上传权限：控制为他人上传/更换人员形象照（本人不受限）
+    PERM_STAFF_PHOTO_UPLOAD,
     get_user_department_scope,
 )
 from app.models.user import User
@@ -59,19 +61,27 @@ async def upload_photo(
     if entity_type not in ("doctor", "nurse", "technician", "admin"):
         raise HTTPException(status_code=400, detail="实体类型必须是 doctor/nurse/technician/admin")
 
-    # 验证权限：只有本人、有staff.edit权限的用户可以上传照片
+    # 验证权限：
+    #  - 本人上传/更换自己的照片：始终允许（基础能力，不受「照片上传」权限限制）；
+    #  - 为他人上传：需「照片上传」权限（staff.photo_upload），且需通过科室/工种数据范围校验。
+    # [调整 2026-09-15] 原门禁为 staff.edit（与「修改人员信息」共用），现拆分为独立权限项，
+    # 支持在「角色管理 → 人员管理」中按角色单独授予/回收；存量角色由启动初始化一次性回填，
+    # 保证升级后能力不缩水。删除照片仍属「修改人员信息」范畴（delete_photo 保持 staff.edit）。
     if entity_id == current_user.employee_id:
         pass  # 本人可以上传自己的照片
-    elif has_permission(current_user, PERM_STAFF_EDIT):
-        # 有 staff.edit 权限的用户（含科室管理员、自定义角色），需在数据范围内
+    elif has_permission(current_user, PERM_STAFF_PHOTO_UPLOAD):
+        # 有「照片上传」权限的用户（含科室管理员、自定义角色），需在数据范围内
         staff = get_staff(db, entity_id)
         if not staff or not staff.department:
             raise HTTPException(status_code=403, detail="无权上传该人员的照片")
         from app.dependencies import can_access_staff
         if not can_access_staff(current_user, staff.work_type, staff.department, db):
-            raise HTTPException(status_code=403, detail="无权上传该人员的照片")
+            raise HTTPException(status_code=403, detail="无权上传该人员的照片（不在您的科室/工种数据范围内）")
     else:
-        raise HTTPException(status_code=403, detail="无权上传该人员的照片")
+        raise HTTPException(
+            status_code=403,
+            detail="无「照片上传」权限，请联系管理员在「角色管理 → 人员管理」中授予",
+        )
     
     # 检查实体是否存在（使用统一的人员服务）
     staff = get_staff(db, entity_id)
@@ -127,16 +137,41 @@ async def upload_photo(
         # 免审（超管提交）→ 旧照片已无保留价值，立即清理
         delete_file(old_photo)
 
-    # 发送通知：照片已更新（已派发审核任务时改由审核通知承载，避免重复打扰）
-    if staff and current_user.employee_id != entity_id and not reviewers:
+    # 发送通知：照片已更新
+    # [修复 2026-09-15] 三处收件人口径问题，与「员工信息修改」保持一致：
+    #   1) 补传 department —— 此前未传，导致「相关科室管理员」永远解析不到，
+    #      照片变更实际只有超管能收到（而超管恰是操作者时就会彻底无人收到）；
+    #   2) 补传 exclude_user_id —— 与其它事件一致地排除操作者本人，
+    #      避免出现「自己收到自己操作的通知」这种与人员/科室通知不一致的行为；
+    #   3) 派发审核任务时不再整体跳过 —— 审核人通过 exclude_ids 去重（他们已收到
+    #      「待审核」任务信），其余管理者仍会收到一条报备通知，消除
+    #      「照片已被替换、管理者却完全不知情」的监管空白。
+    # 注：操作者就是照片本人（自助上传）时仍不发提醒，该场景由审核任务通知承载。
+    if staff and current_user.employee_id != entity_id:
         from app.services.user_service import get_user
         mod_user = get_user(db, current_user.employee_id)
         modifier_name = mod_user.name if mod_user else current_user.employee_id
         notify_super_admins(
             db,
             title=f"{staff.name}的照片已更新",
-            content=f"{modifier_name} 更新了 {staff.name}({entity_id}) 的{photo_label}",
+            content=(
+                f"{modifier_name} 更新了 {staff.name}({entity_id}) 的{photo_label}"
+                + (f"（已提交审核，待 {len(reviewers)} 位审核人处理）" if reviewers else "")
+            ),
             related_type="photo",
+            # 收件人范围由该人员所属科室决定（超管 + 相关科室管理员）
+            department=staff.department,
+            exclude_user_id=current_user.employee_id,
+            # 审核人已单独收到「待审核」任务通知，此处不重复打扰
+            exclude_ids=reviewers or None,
+            # [新增 2026-09-15] 接入可配置通知中心（事件：人员照片更新）
+            event_code="photo.updated",
+            context={
+                "操作人": modifier_name,
+                "姓名": staff.name,
+                "工号": entity_id,
+                "照片类型": photo_label,
+            },
         )
 
     db.commit()
@@ -214,6 +249,9 @@ async def delete_photo(
     update_staff(db, entity_id, staff_update, updated_by=current_user.employee_id)
 
     # 发送通知：照片已删除
+    # [修复 2026-09-15] 同照片更新：补传 department（否则科室管理员永远收不到）
+    # 与 exclude_user_id（否则操作者本人也会收到，与其它事件策略不一致）。
+    # 照片删除是立即生效、不可逆的操作（不走审核流程），提醒尤其重要。
     if current_user.employee_id != entity_id:
         from app.services.user_service import get_user
         mod_user = get_user(db, current_user.employee_id)
@@ -223,6 +261,17 @@ async def delete_photo(
             title=f"{entity.name}的照片被删除",
             content=f"{modifier_name} 删除了 {entity.name}({entity_id}) 的{photo_label}",
             related_type="photo",
+            # 收件人范围由该人员所属科室决定（超管 + 相关科室管理员）
+            department=entity.department,
+            exclude_user_id=current_user.employee_id,
+            # [新增 2026-09-15] 接入可配置通知中心（事件：人员照片删除）
+            event_code="photo.deleted",
+            context={
+                "操作人": modifier_name,
+                "姓名": entity.name,
+                "工号": entity_id,
+                "照片类型": photo_label,
+            },
         )
 
     db.commit()

@@ -28,5 +28,9 @@ from app.models.signage import Signage, FloorPlan, SignagePoint, SignagePhoto, S
 from app.models.campus import Campus, Building, Floor, Area
 # [修复 2026-09-04] 标识分类和供应商模型导入
 from app.models.signage_settings import SignageCategory, Supplier
+# [新增 2026-09-15] 通知规则模型导入（可配置通知中心：事件级开关 / 文案模板 / 收件人规则）
+from app.models.notification_rule import NotificationRule
+# [新增 2026-09-15] 批量重置密码任务（后台执行 + 前端进度条）
+from app.models.password_reset_task import PasswordResetTask
 
-__all__ = ["Base", "User", "Staff", "Department", "DepartmentSpecialty", "SpecialtyImage", "DepartmentEquipment", "EquipmentImage", "ModificationHistory", "Role", "Permission", "StaffCard", "Notification", "UploadSession", "ExportPackage", "Regulation", "RegulationCategory", "RegulationHistory", "TokenBlacklist", "SystemConfig", "UserDepartmentScope", "SystemLog", "Signage", "FloorPlan", "SignagePoint", "SignagePhoto", "SignageHistory", "SignageInspection", "Campus", "Building", "Floor", "Area", "SignageCategory", "Supplier", "RateLimitRecord", "RegistrationRequest", "Message", "MessageRecipient", "MessageTag", "StaffChangeRequest"]
+__all__ = ["Base", "User", "Staff", "Department", "DepartmentSpecialty", "SpecialtyImage", "DepartmentEquipment", "EquipmentImage", "ModificationHistory", "Role", "Permission", "StaffCard", "Notification", "UploadSession", "ExportPackage", "Regulation", "RegulationCategory", "RegulationHistory", "TokenBlacklist", "SystemConfig", "UserDepartmentScope", "SystemLog", "Signage", "FloorPlan", "SignagePoint", "SignagePhoto", "SignageHistory", "SignageInspection", "Campus", "Building", "Floor", "Area", "SignageCategory", "Supplier", "RateLimitRecord", "RegistrationRequest", "Message", "MessageRecipient", "MessageTag", "StaffChangeRequest", "PasswordResetTask", "NotificationRule"]

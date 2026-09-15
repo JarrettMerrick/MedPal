@@ -558,10 +558,16 @@ def _notify_system_admins(title: str, content: str, level: str):
                 if has_permission(u, PERM_SYSTEM_CONFIG) or has_permission(u, PERM_SYSTEM_BACKUP)
             ]
             if targets:
-                message_service.create_message(
-                    db, title=f"[{level.upper()}] {title}", content=content,
-                    recipients=targets, sender_id=None, msg_type="system",
+                # [调整 2026-09-15] 统一走通知中心（事件：system.alert）：
+                # 管理员可在「通知设置 → 系统告警」中关闭或调整文案；正文/标题按原文插入
+                from app.services import notification_center
+                notification_center.emit(
+                    db, "system.alert",
+                    context={"级别": level.upper(), "标题": title, "内容": content},
+                    recipients=targets,
                     related_type="system_alert",
+                    fallback_title=f"[{level.upper()}] {title}",
+                    fallback_content=content,
                 )
             db.commit()
             _alert_notify_times[level] = now
@@ -834,9 +840,19 @@ def notify_resigned_accounts():
                 f"请前往「用户管理」手动删除其登录账号（删除账号会一并清理人员档案，"
                 f"离职人数等统计不受影响）。"
             )
-            message_service.create_message(
-                db, title="离职档案清理提醒", content=content, recipients=admins,
-                sender_id=None, msg_type="system", related_type="system_alert",
+            # [调整 2026-09-15] 统一走通知中心（事件：system.resign_cleanup）
+            from app.services import notification_center
+            notification_center.emit(
+                db, "system.resign_cleanup",
+                context={
+                    "保留天数": RESIGN_RETENTION_DAYS,
+                    "名单": shown,
+                    "更多": more,
+                },
+                recipients=admins,
+                related_type="system_alert",
+                fallback_title="离职档案清理提醒",
+                fallback_content=content,
             )
             now = utc_now()
             for s in targets:

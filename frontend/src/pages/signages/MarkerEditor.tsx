@@ -4,13 +4,16 @@ import { Card, Select, Button, message, Space, Tag, Modal, Table, Input, Typogra
 import { ZoomInOutlined, ZoomOutOutlined, ReloadOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import {
   getFloorPlanList, getFloorPlanPoints, createFloorPlanPoint, deleteFloorPlanPoint, getSignageList, getSignage,
+  // [新增 2026-09-14] 预警标识清单：用于把预警标识渲染为红色方框 + 感叹号
+  getAlertedSignages,
 } from '../../api/signage';
 import type { FloorPlan, SignagePoint, Signage } from '../../api/signage';
 import { getActiveSignageCategories } from '../../api/signage-settings';
 import type { SignageCategory } from '../../api/signage-settings';
 import SafeImage from '../../components/SafeImage';
 // [修复 2026-09-05] 标记形状渲染：与分类设置共用同一套形状定义
-import { renderMarkerShape } from '../../components/MarkerShape';
+// [新增 2026-09-14] 追加预警标识专用形状（红色方框 + 白色感叹号）
+import { renderMarkerShape, renderAlertMarkerShape, ALERT_MARKER_COLOR } from '../../components/MarkerShape';
 // [修复 2026-09-05] 标识状态映射：与标识巡检共用同一套状态常量
 import { SIGNAGE_STATUS_MAP } from '../../constants/signageStatus';
 
@@ -23,11 +26,14 @@ const STATUS_MAP = SIGNAGE_STATUS_MAP;
 
 // [修复 2026-09-05] Pin 标记点（React.memo 提升 500+ 点位渲染性能）：
 // 形状取自标识分类配置，与分类颜色组合渲染，形状中心对准点位坐标
+// [调整 2026-09-14] 预警标识不再按分类渲染，统一为红色方框 + 白色感叹号，突出「需要处理」
 const PIN_SIZE = 24;
 interface PinProps {
   point: SignagePoint;
   color: string;
   shape: string;
+  /** [新增 2026-09-14] 是否处于预警状态：为 true 时忽略分类形状/颜色，渲染预警样式 */
+  alerted?: boolean;
   /**
    * [修复 2026-09-09] 反向缩放系数（= 1 / zoom）：
    * 舞台带 scale(zoom)，若不做抵消记号会随缩放变大变小；此处按 1/zoom 反向缩放，
@@ -36,7 +42,7 @@ interface PinProps {
   scale?: number;
   onSelect: (p: SignagePoint) => void;
 }
-const Pin = React.memo(({ point, color, shape, scale = 1, onSelect }: PinProps) => (
+const Pin = React.memo(({ point, color, shape, alerted = false, scale = 1, onSelect }: PinProps) => (
   <div
     onClick={(e) => { e.stopPropagation(); onSelect(point); }}
     style={{
@@ -46,7 +52,8 @@ const Pin = React.memo(({ point, color, shape, scale = 1, onSelect }: PinProps) 
       // 位置由百分比定位（随平面图缩放移动），尺寸用反向缩放保持恒定
       transform: `translate(-50%, -50%) scale(${scale})`,
       cursor: 'pointer',
-      zIndex: 10,
+      // 预警标识层级略高，避免被相邻的普通标记遮挡
+      zIndex: alerted ? 11 : 10,
       filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.35))',
       transition: 'transform 0.12s ease',
     }}
@@ -54,7 +61,7 @@ const Pin = React.memo(({ point, color, shape, scale = 1, onSelect }: PinProps) 
     onMouseLeave={(e) => { e.currentTarget.style.transform = `translate(-50%, -50%) scale(${scale})`; }}
   >
     <svg width={PIN_SIZE} height={PIN_SIZE} viewBox={`0 0 ${PIN_SIZE} ${PIN_SIZE}`}>
-      {renderMarkerShape(shape, color, PIN_SIZE)}
+      {alerted ? renderAlertMarkerShape(PIN_SIZE) : renderMarkerShape(shape, color, PIN_SIZE)}
     </svg>
   </div>
 ));
@@ -66,9 +73,13 @@ const MarkerEditor: React.FC = () => {
   const [signages, setSignages] = useState<Signage[]>([]);
   // [修复 2026-09-05] 分类标记样式映射：分类名 -> { 颜色, 形状 }
   const [catStyleMap, setCatStyleMap] = useState<Record<string, { color: string; shape: string }>>({});
+  // [新增 2026-09-14] 预警标识映射：标识ID -> 预警类型名数组；不在映射中即为正常标识
+  const [alertedMap, setAlertedMap] = useState<Record<number, string[]>>({});
   const [loading, setLoading] = useState(false);
   // [修复 2026-09-05] 标记模式开关：进入标记模式后才允许点击平面图放置标识
   const [markerMode, setMarkerMode] = useState(false);
+  // [新增 2026-09-14] 分类图例折叠状态：窄屏下可收起，避免遮挡底图与底部悬浮工具栏
+  const [legendCollapsed, setLegendCollapsed] = useState(false);
 
   // [修复 2026-09-05] 缩放/平移状态
   const [zoom, setZoom] = useState(1);
@@ -117,6 +128,13 @@ const MarkerEditor: React.FC = () => {
       });
       setCatStyleMap(m);
     }).catch(() => {});
+    // [新增 2026-09-14] 加载预警标识清单（地图上以红色方框 + 感叹号突出显示）。
+    // 接口需要「查看标识预警」权限，无权限时静默降级为空集合，不影响标记功能本身。
+    getAlertedSignages().then((items) => {
+      const m: Record<number, string[]> = {};
+      items.forEach((it) => { m[it.id] = it.alerts; });
+      setAlertedMap(m);
+    }).catch(() => setAlertedMap({}));
     loadSignages('');
   }, []);
 
@@ -273,6 +291,14 @@ const MarkerEditor: React.FC = () => {
     return { color: p.pin_color || DEFAULT_PIN_COLOR, shape: 'circle' };
   }, [catStyleMap]);
 
+  // [新增 2026-09-14] 分类图例数据：直接复用标记点位的配色表（同一数据源），
+  // 保证「图例所示形状/颜色」与「地图上实际标记」完全一致；
+  // 顺序沿用「标识分类设置」返回的顺序（catStyleMap 按接口列表顺序构建）。
+  const legendItems = useMemo(
+    () => Object.entries(catStyleMap).map(([name, v]) => ({ name, color: v.color, shape: v.shape })),
+    [catStyleMap],
+  );
+
   const handleBindOk = async () => {
     if (!selectedSignageId || !pendingCoord) { message.warning('请选择一条标识'); return; }
     try {
@@ -361,8 +387,10 @@ const MarkerEditor: React.FC = () => {
 
   const markers = useMemo(() => points.map((p) => {
     const st = styleOf(p);
-    return <Pin key={p.id} point={p} color={st.color} shape={st.shape} scale={markerScale} onSelect={setDetailPoint} />;
-  }), [points, styleOf, markerScale]);
+    // [新增 2026-09-14] 预警标识统一以红色方框 + 感叹号渲染（忽略分类的形状与颜色）
+    const alerted = !!alertedMap[p.signage_id];
+    return <Pin key={p.id} point={p} color={st.color} shape={st.shape} alerted={alerted} scale={markerScale} onSelect={setDetailPoint} />;
+  }), [points, styleOf, markerScale, alertedMap]);
 
   return (
     <div>
@@ -461,6 +489,75 @@ const MarkerEditor: React.FC = () => {
               <Button size="small" icon={<ZoomInOutlined />} onClick={zoomIn} title="放大" />
               <Button size="small" icon={<ReloadOutlined />} onClick={resetView}>复位</Button>
             </div>
+
+            {/* [新增 2026-09-14] 分类图例：置于地图左下角，说明各标识分类对应的标记图标样式（形状 + 颜色）。
+                数据与地图上的标记点同源，说明即所见；点击面板头部可折叠，避免窄屏时遮挡底图。
+                沿用悬浮工具栏的做法阻止冒泡，避免点击图例被误判为「在地图上放置标记」或触发拖拽平移 */}
+            {legendItems.length > 0 && (
+              <div
+                style={{
+                  position: 'absolute', left: 12, bottom: 12, zIndex: 20,
+                  background: 'rgba(255,255,255,0.96)', border: '1px solid #e4e9f0',
+                  borderRadius: 10, boxShadow: '0 4px 16px rgba(15,23,42,0.18)',
+                  padding: legendCollapsed ? '6px 10px' : '9px 12px',
+                  maxWidth: 208,
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div
+                  onClick={() => setLegendCollapsed((v) => !v)}
+                  title={legendCollapsed ? '展开分类图例' : '收起分类图例'}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}
+                >
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#3D4A5C' }}>分类图例</span>
+                  <span style={{ fontSize: 11, color: '#8A97A6' }}>{legendCollapsed ? '展开' : '收起'}</span>
+                </div>
+                {!legendCollapsed && (
+                  <div
+                    style={{
+                      marginTop: 8, maxHeight: 220, overflowY: 'auto',
+                      display: 'flex', flexDirection: 'column', gap: 6,
+                    }}
+                  >
+                    {legendItems.map((it) => (
+                      <div key={it.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {/* 与标记点位共用同一套形状绘制逻辑，保证图例与地图展示一致 */}
+                        <svg width={18} height={18} viewBox="0 0 18 18" style={{ flexShrink: 0 }}>
+                          {renderMarkerShape(it.shape, it.color, 18)}
+                        </svg>
+                        <span
+                          style={{
+                            fontSize: 12.5, color: '#3D4A5C',
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {it.name}
+                        </span>
+                      </div>
+                    ))}
+                    {/* [新增 2026-09-14] 预警标识样式：不按分类渲染，统一为红色方框 + 感叹号 */}
+                    <div
+                      style={{
+                        marginTop: 2, paddingTop: 8, borderTop: '1px dashed #E4E9F0',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                      }}
+                    >
+                      <svg width={18} height={18} viewBox="0 0 18 18" style={{ flexShrink: 0 }}>
+                        {renderAlertMarkerShape(18)}
+                      </svg>
+                      <span
+                        style={{
+                          fontSize: 12.5, color: ALERT_MARKER_COLOR, fontWeight: 600, whiteSpace: 'nowrap',
+                        }}
+                      >
+                        预警标识
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ height: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 8, color: '#999' }}>
@@ -544,6 +641,15 @@ const MarkerEditor: React.FC = () => {
                     {(STATUS_MAP[detailSignage.status] || { label: detailSignage.status }).label}
                   </Tag>
                 </div>
+                {/* [新增 2026-09-14] 预警原因：与地图上的红色方框 + 感叹号对应，点开即知为何被标记为预警 */}
+                {!!alertedMap[detailSignage.id]?.length && (
+                  <div>
+                    <Text type="secondary">预警：</Text>
+                    {alertedMap[detailSignage.id].map((a) => (
+                      <Tag key={a} color="red" style={{ marginInlineEnd: 4 }}>{a}</Tag>
+                    ))}
+                  </div>
+                )}
                 {/* [修复 2026-09-05] 位置精确到楼层 */}
                 <div><Text type="secondary">位置：</Text>{locationOf(detailSignage)}</div>
                 <div><Text type="secondary">安装时间：</Text>{detailSignage.install_date || '-'}</div>

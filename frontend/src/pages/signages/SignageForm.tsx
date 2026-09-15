@@ -4,7 +4,8 @@ import type { UploadProps } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getSignage, createSignage, updateSignage, uploadSignagePhoto } from '../../api/signage';
 import { campusApi } from '../../api/campus';
-import type { Campus, Building, Floor } from '../../types/campus';
+// [调整 2026-09-12] 新增 Area 类型：楼层导视/宣传时支持多选所属区域
+import type { Campus, Building, Floor, Area } from '../../types/campus';
 // [修复 2026-09-04] 导入标识分类和供应商API
 import { getActiveSignageCategories, getActiveSuppliers } from '../../api/signage-settings';
 import type { SignageCategory, Supplier } from '../../api/signage-settings';
@@ -165,6 +166,9 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
   
   // 所属区域类型状态
   const [selectedZoneType, setSelectedZoneType] = useState<string>('院区导视/宣传');
+
+  // [新增 2026-09-12] 当前楼层的区域列表：仅「楼层导视/宣传」时供多选（选填项）
+  const [areas, setAreas] = useState<Area[]>([]);
   
   // 设计文件和现场照片状态
   const [designPhotoUrl, setDesignPhotoUrl] = useState<string | undefined>();
@@ -235,6 +239,19 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
     }
   }, [selectedBuildingId]);
 
+  // [新增 2026-09-12] 当选择楼层时，加载该楼层已划分的区域列表（供「楼层导视/宣传」多选）
+  // 区域数据来源于「院区管理」→ 楼层 → 区域，与院区管理保持同一数据源
+  useEffect(() => {
+    if (selectedFloorId) {
+      // 单楼层区域数量有限，一次性取足（后端上限 500）避免分页遗漏
+      campusApi.getAreas(selectedFloorId, 1, 500)
+        .then(r => setAreas(r.items))
+        .catch(() => messageApi.error('获取区域列表失败'));
+    } else {
+      setAreas([]);
+    }
+  }, [selectedFloorId]);
+
   // 编辑模式下加载现有数据
   useEffect(() => {
     if (isEdit) {
@@ -243,6 +260,8 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
         .then((data) => {
           form.setFieldsValue({
             ...data,
+            // [新增 2026-09-12] 区域为多选，需把「逗号分隔字符串」还原为数组供 Select mode="multiple" 回填
+            area: data.area ? data.area.split(',').map(v => v.trim()).filter(Boolean) : [],
             install_date: data.install_date ? dayjs(data.install_date) : undefined,
             warranty_expire: data.warranty_expire ? dayjs(data.warranty_expire) : undefined,
             // [新增 2026-09-05] 编辑回填有效期字段（validity_until 需转为 dayjs 供 DatePicker 使用）
@@ -313,6 +332,14 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
         // [新增 2026-09-05] 提交有效期字段：长期标识置空到期日
         validity_type: (values.validity_type as string) || 'long_term',
         validity_until: values.validity_until ? (values.validity_until as dayjs.Dayjs).format('YYYY-MM-DD') : undefined,
+        // [新增 2026-09-12] 所属区域：多选数组 → 逗号分隔字符串。
+        // 仅在「楼层导视/宣传」下取值；区域为选填，未选即空串（不影响保存）。
+        // 注意：此处必须"始终提交该键"（清空时提交空串 '')，不能省略为 undefined。
+        // 后端更新接口使用 model_dump(exclude_unset=True)，省略键 == 不更新该字段，
+        // 会导致「清空区域」与「切换所属区域类型后清除区域」都不落库、旧区域残留。
+        area: selectedZoneType === '楼层导视/宣传' && Array.isArray(values.area)
+          ? (values.area as string[]).join(',')
+          : '',
         design_photo: designPhotoUrl,
         installation_photo: installationPhotoUrl,
       };
@@ -623,6 +650,10 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                     if (value === '院区导视/宣传') {
                       form.setFieldsValue({ building: undefined, floor: undefined });
                     }
+                    // [新增 2026-09-12] 区域仅在「楼层导视/宣传」下有意义，切换到其他类型时清空原选择
+                    if (value !== '楼层导视/宣传') {
+                      form.setFieldsValue({ area: [] });
+                    }
                   }}
                 >
                   {ZONE_TYPE_OPTIONS.map((item) => (
@@ -641,7 +672,8 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                   onChange={(value) => {
                     setSelectedCampusId(value);
                     const campusName = campuses.find(c => c.id === value)?.name;
-                    form.setFieldsValue({ campus: campusName, building: undefined, floor: undefined });
+                    // [调整 2026-09-12] 院区变更会重置楼栋/楼层，区域同属楼层维度，一并清空
+                    form.setFieldsValue({ campus: campusName, building: undefined, floor: undefined, area: [] });
                   }}
                   showSearch
                   optionFilterProp="label"
@@ -665,7 +697,8 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                   onChange={(value) => {
                     setSelectedBuildingId(value);
                     const b = buildings.find(b => b.id === value);
-                    form.setFieldsValue({ building: b ? `${b.building_number}-${b.name}` : undefined, floor: undefined });
+                    // [调整 2026-09-12] 楼栋变更会重置楼层，区域同属楼层维度，一并清空
+                    form.setFieldsValue({ building: b ? `${b.building_number}-${b.name}` : undefined, floor: undefined, area: [] });
                   }}
                   allowClear
                   disabled={!selectedCampusId}
@@ -692,7 +725,8 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                     setSelectedFloorId(value);
                     const f = floors.find(f => f.id === value);
                     const floorLabel = f ? (f.floor_name ? `${f.floor_number}F-${f.floor_name}` : `${f.floor_number}F`) : undefined;
-                    form.setFieldsValue({ floor: floorLabel });
+                    // [调整 2026-09-12] 楼层变更后区域归属随之变化，清空原区域选择（区域列表由 useEffect 重新加载）
+                    form.setFieldsValue({ floor: floorLabel, area: [] });
                   }}
                   allowClear
                   disabled={!selectedBuildingId}
@@ -711,6 +745,35 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
           
 
           
+          {/* [新增 2026-09-12] 所属区域：仅「楼层导视/宣传」时显示。
+              按需求「区域字段为非必选条件」——选填且支持多选：可不选、可选一个、也可选多个。
+              选项来自「院区管理」中该楼层下已划分的区域；未选楼层时禁用。 */}
+          {selectedZoneType === '楼层导视/宣传' && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={styles.formLabel}>
+                区域 <span style={styles.optionalMark}>（选填，可多选）</span>
+              </div>
+              <Form.Item name="area" noStyle>
+                <Select
+                  mode="multiple"
+                  placeholder={selectedFloorId ? '可不选，也可以选择多个区域' : '请先选择楼层'}
+                  style={{ width: '100%' }}
+                  allowClear
+                  disabled={!selectedFloorId}
+                  optionFilterProp="label"
+                  options={buildAreaOptions(areas)}
+                />
+              </Form.Item>
+              <div style={styles.helpText}>
+                {selectedFloorId
+                  ? (areas.length > 0
+                    ? '区域数据来源于「院区管理」中该楼层的区域划分；不选或选择多个均可保存'
+                    : '该楼层尚未划分区域，可前往「院区管理」添加后再选（本项为选填，可直接保存）')
+                  : '请先选择楼层后再选择区域（本项为选填）'}
+              </div>
+            </div>
+          )}
+
           <div>
             <div style={styles.formLabel}>安装位置描述 <span style={styles.requiredMark}>*</span></div>
             <Form.Item name="location_desc" noStyle rules={[{ required: true, message: '请输入安装位置描述' }]}>
@@ -957,6 +1020,29 @@ const ZONE_TYPE_OPTIONS = [
   { value: '楼栋导视/宣传', label: '楼栋导视/宣传', description: '需要选择到具体楼层' },
   { value: '楼层导视/宣传', label: '楼层导视/宣传', description: '需要选择到具体楼层' },
 ];
+
+// [新增 2026-09-12] 区域类型中文名，用于区域多选下拉的辅助说明（与「院区管理」展示口径一致）
+const AREA_TYPE_LABELS: Record<string, string> = {
+  east: '东区',
+  west: '西区',
+  merged: '合并区域',
+};
+
+/**
+ * [新增 2026-09-12] 构建区域多选下拉选项。
+ * 说明：区域选择以「区域名称」作为取值（与 campus/building/floor 的存名口径一致），
+ * 而取消区域类型互斥后同一楼层允许出现重名区域，若不按名称去重会产生重复选项、
+ * 导致多选值冲突与 React key 重复告警，故此处按名称去重保留首个。
+ */
+const buildAreaOptions = (areas: Area[]) => {
+  const seen = new Set<string>();
+  return areas
+    .filter(a => (seen.has(a.name) ? false : (seen.add(a.name), true)))
+    .map(a => ({
+      value: a.name,
+      label: `${a.name}（${AREA_TYPE_LABELS[a.area_type] || a.area_type}）`,
+    }));
+};
 
 // [修复 2026-09-04] 获取文件扩展名
 const getFileExtension = (filePath: string): string => {

@@ -32,6 +32,8 @@ from app.dependencies import (
     # [新增 2026-09-11] 导出离职人员需额外权限
     PERM_STAFF_VIEW_RESIGNED,
     ROLE_EMPLOYEE,
+    # [新增 2026-09-14] 制度相关接口需受「功能开关 → 制度牌」约束
+    require_feature_enabled,
 )
 from app.models.user import User
 from app.models.department import Department, DepartmentSpecialty, SpecialtyImage, DepartmentEquipment, EquipmentImage
@@ -41,6 +43,8 @@ from app.models.regulation import Regulation, RegulationCategory, RegulationHist
 from app.config import settings, DATA_ROOT
 from app.utils import decode_token, utc_now, to_beijing, get_client_ip
 from app.services.audit_service import record_audit, audit_action
+# [新增 2026-09-15] 站内信提醒：数据导入/导出后通知管理方（此前只留痕不提醒）
+from app.services.modification_notify import notify_super_admins
 from app.services.auth_service import is_token_blacklisted
 # [修复 2026-09-01] 将 StaffVerifyResponse 等提升为模块级导入：
 # verify_staff 路由的 response_model 在装饰器处（模块加载时）即被求值，
@@ -51,6 +55,31 @@ from app.schemas.staff import (
 )
 
 router = APIRouter(prefix="/api/data", tags=["数据管理"])
+
+
+# [新增 2026-09-15] 数据导入/导出站内信（统一出口，失败静默，不影响业务主流程）
+# 背景：导入/导出会一次性触碰大量业务数据（或把数据带离系统），
+# 是最需要留痕与知会的操作，此前仅写系统日志（事件：data.imported / data.exported）。
+def _notify_data_change(
+    db: Session, current_user: User, event_code: str, obj_label: str, summary: str,
+) -> None:
+    """数据导入 / 导出站内信：收件人=超管+相关科室管理员（自动排除操作者本人）"""
+    try:
+        operator_name = getattr(current_user, "name", None) or current_user.employee_id
+        is_import = event_code == "data.imported"
+        action_text = "执行了数据导入" if is_import else "导出了"
+        notify_super_admins(
+            db,
+            title=f"{'数据导入' if is_import else '数据导出'}：{obj_label}",
+            content=f"{operator_name} {action_text} {obj_label}：{summary}",
+            related_type="system_alert",
+            exclude_user_id=current_user.employee_id,
+            event_code=event_code,
+            context={"操作人": operator_name, "对象": obj_label, "变更内容": summary},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 # [修复] Excel 导入文件校验：大小上限 + 文件头魔数。
 # 原先仅靠扩展名判断，伪造扩展名的大文件/畸形文件可触发 load_workbook 内存/解析 DoS。
@@ -205,6 +234,11 @@ def export_departments(
     wb.save(tmp.name)
     tmp.close()
     background_tasks.add_task(_delete_temp_file, tmp.name)
+    # [新增 2026-09-15] 补发站内信（事件：data.exported）
+    _notify_data_change(
+        db, current_user, "data.exported", "科室信息",
+        f"导出科室 {len(departments)} 个（含特色技术/设备，xlsx）",
+    )
     filename = f"科室信息_{utc_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return FileResponse(
         path=tmp.name,
@@ -213,7 +247,8 @@ def export_departments(
     )
 
 
-@router.get("/export/regulations")
+# [调整 2026-09-14] 制度导出随「功能开关 → 制度牌」一并关闭
+@router.get("/export/regulations", dependencies=[Depends(require_feature_enabled("regulation"))])
 def export_regulations(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(require_permission(PERM_DATA_EXPORT)),
@@ -233,6 +268,11 @@ def export_regulations(
                 val = val.strftime("%Y-%m-%d %H:%M")
             row[field] = val
         rows.append(row)
+    # [新增 2026-09-15] 补发站内信（事件：data.exported）
+    _notify_data_change(
+        db, current_user, "data.exported", "制度信息",
+        f"导出制度 {len(regulations)} 条（xlsx）",
+    )
     return _export_to_file(REGULATION_COLUMNS, rows, "制度信息", background_tasks)
 
 
@@ -350,6 +390,11 @@ def export_images(
 
     # tmp 已在上方创建并登记删除任务，这里只需关闭句柄
     tmp.close()
+    # [新增 2026-09-15] 补发站内信（事件：data.exported）
+    _notify_data_change(
+        db, current_user, "data.exported", "科室图片",
+        f"导出科室「{dept_filter.name}」的照片压缩包（zip）",
+    )
     filename = f"图片打包_{utc_now().strftime('%Y%m%d_%H%M%S')}.zip"
     return FileResponse(
         path=tmp.name,
@@ -636,6 +681,12 @@ def create_package(
         set(selected_types),
     )
 
+    # [新增 2026-09-15] 补发站内信（事件：data.exported）
+    _notify_data_change(
+        db, current_user, "data.exported", "图片打包任务",
+        f"创建打包任务：科室「{dept_name}」，照片类型: {photo_types_str}",
+    )
+
     return {
         "id": pkg.id,
         "department_name": dept_name,
@@ -718,6 +769,12 @@ def download_package(
     zip_path = EXPORT_DIR / pkg.filename
     if not zip_path.exists():
         raise HTTPException(404, "打包文件不存在")
+
+    # [新增 2026-09-15] 补发站内信（事件：data.exported；含 Range 断点续传下载）
+    _notify_data_change(
+        db, current_user, "data.exported", "图片打包文件",
+        f"下载打包文件 {pkg.filename}（科室: {pkg.department_name or '-'}）",
+    )
 
     file_size = zip_path.stat().st_size
 
@@ -991,6 +1048,11 @@ async def import_departments(
     # [修复/问题25] 改用统一审计助手，消除重复样板
     audit_action(db, "import_departments", current_user.employee_id, request,
                  detail=f"added={added}, skipped={skipped_dept}", target="departments")
+    # [新增 2026-09-15] 补发站内信（事件：data.imported）
+    _notify_data_change(
+        db, current_user, "data.imported", "科室信息",
+        f"导入完成：新增 {added} 条，跳过 {skipped_dept} 条",
+    )
     return {"message": f"导入完成，成功 {added} 条，跳过 {skipped_dept} 条", "added": added, "skipped": skipped_dept}
 
 
@@ -1046,6 +1108,11 @@ def export_staff(
     if work_type:
         type_names = {"doctor": "医生", "nurse": "护士", "technician": "技师", "admin": "行政"}
         prefix = f"{type_names.get(work_type, work_type)}信息"
+    # [新增 2026-09-15] 补发站内信（事件：data.exported；导出离职人员属敏感操作更需知会）
+    _notify_data_change(
+        db, current_user, "data.exported", "人员信息",
+        f"导出 {len(staff_list)} 条记录（xlsx，筛选状态: {status or '全部'}）",
+    )
     return _export_to_file(export_columns, rows, prefix, background_tasks)
 
 
@@ -1058,7 +1125,8 @@ def template_staff(
     return _export_to_file(STAFF_COLUMNS, [], "员工导入模板", background_tasks)
 
 
-@router.get("/template/regulations")
+# [调整 2026-09-14] 制度导入模板随「功能开关 → 制度牌」一并关闭
+@router.get("/template/regulations", dependencies=[Depends(require_feature_enabled("regulation"))])
 def template_regulations(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(require_permission(PERM_DATA_EXPORT)),
@@ -1236,10 +1304,16 @@ async def import_staff(
     # [修复/问题25] 改用统一审计助手，消除重复样板
     audit_action(db, "import_staff", current_user.employee_id, request,
                  detail=f"added={added}, skipped={skipped}", target="staff")
+    # [新增 2026-09-15] 补发站内信（事件：data.imported）
+    _notify_data_change(
+        db, current_user, "data.imported", "人员信息",
+        f"导入完成：新增 {added} 条，跳过 {skipped} 条",
+    )
     return result
 
 
-@router.post("/import/regulations")
+# [调整 2026-09-14] 制度导入随「功能开关 → 制度牌」一并关闭
+@router.post("/import/regulations", dependencies=[Depends(require_feature_enabled("regulation"))])
 async def import_regulations(
     file: UploadFile = File(...),
     request: Request = None,
@@ -1350,6 +1424,11 @@ async def import_regulations(
     # [修复/问题25] 改用统一审计助手，消除重复样板
     audit_action(db, "import_regulations", current_user.employee_id, request,
                  detail=f"added={added}, skipped={skipped}", target="regulations")
+    # [新增 2026-09-15] 补发站内信（事件：data.imported）
+    _notify_data_change(
+        db, current_user, "data.imported", "制度信息",
+        f"导入完成：新增 {added} 条，跳过 {skipped} 条",
+    )
     return {"message": f"导入完成，成功 {added} 条新增，跳过 {skipped} 条已存在", "added": added, "skipped": skipped}
 
 
@@ -1460,6 +1539,11 @@ async def import_photos(
     # 消除重复的 try/commit/rollback 样板
     audit_action(db, "import_photos", current_user.employee_id, request,
                  detail=f"imported={imported}, skipped={skipped}", target="photos")
+    # [新增 2026-09-15] 补发站内信（事件：data.imported）
+    _notify_data_change(
+        db, current_user, "data.imported", "人员照片",
+        f"导入完成：成功 {imported} 张，跳过 {skipped} 张",
+    )
 
     msg = f"导入完成，成功 {imported} 张，跳过 {skipped} 张"
     if errors:

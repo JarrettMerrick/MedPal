@@ -153,15 +153,12 @@ def change_password(db: Session, user: User, old_password: str, new_password: st
     return True
 
 
-def get_default_password(db: Session, employee_id: str | None = None) -> str:
-    """返回新建账号时使用的初始口令（由「账号设置」中的模板生成）。
+def get_default_password_template(db: Session) -> str:
+    """返回**实际生效**的「默认口令模板」（未配置时回退内置默认）。
 
-    [调整 2026-09-10] 改为读取系统配置 `default_password_template`：
-      - 支持 `{工号}` 占位符（替换为传入的员工工号），也可只填固定口令；
-      - 未配置（为空）时回退内置默认 `MedPal@2026`；
-      - 生成结果不足 6 位时同样回退，避免配置出弱口令。
-    账号创建时仍置 `must_change_password=True`，使用者首次登录即被强制修改。
-    「重置密码」走另一套规则（`Rici@` + 工号，见 `reset_password`），不受本配置影响。
+    [新增 2026-09-14] 从 get_default_password 中拆出：批量操作（如「一键重置全员密码」）
+    需要按同一规则生成成百上千条口令，先读出模板可避免逐条查库，
+    也保证整批口径完全一致（不会出现"重置到一半改了配置"的中间态）。
     """
     from app.services.system_config_service import (
         DEFAULT_PASSWORD_TEMPLATE_KEY,
@@ -170,12 +167,36 @@ def get_default_password(db: Session, employee_id: str | None = None) -> str:
     )
 
     template = (get_config_value(db, DEFAULT_PASSWORD_TEMPLATE_KEY, "") or "").strip()
-    if not template:
-        return DEFAULT_PASSWORD_TEMPLATE_FALLBACK
-    password = template.replace("{工号}", (employee_id or "").strip())
+    return template or DEFAULT_PASSWORD_TEMPLATE_FALLBACK
+
+
+def render_default_password(template: str, employee_id: str | None = None) -> str:
+    """按模板渲染初始口令：替换 `{工号}` 占位符，结果不足 6 位时回退内置默认。
+
+    与 get_default_password_template 配套使用（见 get_default_password）。
+    """
+    from app.services.system_config_service import DEFAULT_PASSWORD_TEMPLATE_FALLBACK
+
+    password = (template or "").replace("{工号}", (employee_id or "").strip())
     if len(password) < 6:
         return DEFAULT_PASSWORD_TEMPLATE_FALLBACK
     return password
+
+
+def get_default_password(db: Session, employee_id: str | None = None) -> str:
+    """返回新建账号时使用的初始口令（由「账号设置」中的模板生成）。
+
+    [调整 2026-09-10] 改为读取系统配置 `default_password_template`：
+      - 支持 `{工号}` 占位符（替换为传入的员工工号），也可只填固定口令；
+      - 未配置（为空）时回退内置默认 `MedPal@2026`；
+      - 生成结果不足 6 位时同样回退，避免配置出弱口令。
+    [调整 2026-09-14] 适用场景：后台新建用户 / 批量建号 / 导入人员建号 /
+      **一键重置全员密码**（routers/account_settings.py）。
+    上述场景一律置 `must_change_password=True`，使用者首次登录即被强制修改。
+    注意：单个用户的「重置密码」（`Rici@` + 工号，见 reset_password）仍走另一套规则，
+    不受本配置影响。
+    """
+    return render_default_password(get_default_password_template(db), employee_id)
 
 
 def reset_password(db: Session, user: User) -> str:

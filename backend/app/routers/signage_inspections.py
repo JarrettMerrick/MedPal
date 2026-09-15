@@ -20,11 +20,47 @@ from app.models.department import Department
 from app.services import signage_service
 # [新增 2026-09-09] 巡检操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：巡检提交后通知管理方（此前只留痕不提醒）
+from app.services.modification_notify import notify_super_admins
 from app.utils import utc_now, get_client_ip
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/signage-inspections", tags=["标识巡检"])
+
+
+# [新增 2026-09-15] 巡检结果中文映射（与标识状态取值口径一致）
+INSPECTION_RESULT_LABELS = {
+    "normal": "正常", "damaged": "轻微破损",
+    "severely_damaged": "严重损坏", "removed": "已拆除",
+}
+
+
+def _notify_inspection(db: Session, current_user: User, s, rec) -> None:
+    """[新增 2026-09-15] 巡检提交站内信（事件：signage.inspection_submitted，失败静默）"""
+    try:
+        inspector_name = getattr(current_user, "name", None) or current_user.employee_id
+        result_label = INSPECTION_RESULT_LABELS.get(rec.result, rec.result)
+        summary = f"巡检结果: {result_label}"
+        if rec.notes:
+            summary += f"（备注: {str(rec.notes)[:50]}）"
+        if rec.photo:
+            summary += "（含现场照片）"
+        dept_name = getattr(getattr(s, "department", None), "name", None)
+        notify_super_admins(
+            db,
+            title=f"标识巡检提交：{s.code}",
+            content=f"{inspector_name} 提交了标识 {s.code}「{s.name}」的巡检记录：{summary}",
+            related_type="signage",
+            related_id=s.id,
+            department=dept_name,
+            exclude_user_id=current_user.employee_id,
+            event_code="signage.inspection_submitted",
+            context={"操作人": inspector_name, "标识": s.code, "变更内容": summary},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 # [新增 2026-09-05] 巡检结果直接复用标识现有 status 字段的取值，保证口径一致
 ALLOWED_RESULTS = {"normal", "damaged", "severely_damaged", "removed"}
@@ -122,6 +158,8 @@ def create_inspection(
                      target=str(s.id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.inspection_submitted）
+    _notify_inspection(db, current_user, s, rec)
     return {
         "ok": True,
         "id": rec.id,

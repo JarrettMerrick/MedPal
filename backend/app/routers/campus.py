@@ -32,6 +32,8 @@ from app.services.campus_service import (
 )
 # [新增 2026-09-09] 空间结构写操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：院区 / 楼栋 / 楼层 / 区域变更后通知管理方
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 from fastapi import Request
 
@@ -44,6 +46,43 @@ def _audit(db, action, current_user, target, detail, request):
         client_ip = get_client_ip(request)
         record_audit(db, action, current_user.employee_id, detail=detail,
                      target=str(target), ip_address=client_ip)
+        db.commit()
+    except Exception:
+        pass
+
+    # [新增 2026-09-15] 空间结构变更后补发站内信（事件：院区 / 楼栋 / 楼层 / 区域变更）：
+    # 在 _audit 内统一发送，一次覆盖全部 12 个写端点（创建/更新/删除 × 院区/楼栋/楼层/区域）。
+    # 院区结构是标识牌定位与筛选的基础数据，改动会影响所有标识的归属与统计口径，
+    # 此前只留痕不提醒，管理方无从察觉。失败静默，不影响主流程。
+    try:
+        _ACTION_LABELS = {
+            "campus_create": "新增院区", "campus_update": "修改院区", "campus_delete": "删除院区",
+            "building_create": "新增楼栋", "building_update": "修改楼栋", "building_delete": "删除楼栋",
+            "floor_create": "新增楼层", "floor_update": "修改楼层", "floor_delete": "删除楼层",
+            "area_create": "新增区域", "area_update": "修改区域", "area_delete": "删除区域",
+        }
+        action_label = _ACTION_LABELS.get(action, action)
+        # detail 形如 "name=门诊楼" / "number=3" / "type=merged"：去掉字段名前缀便于阅读
+        detail_text = detail or ""
+        for _prefix in ("name=", "number=", "type="):
+            detail_text = detail_text.replace(_prefix, "")
+        obj_desc = f"「{detail_text}」" if detail_text else ""
+
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"院区结构变更：{action_label}",
+            content=f"{modifier_name} {action_label}{obj_desc}",
+            related_type="campus",
+            exclude_user_id=current_user.employee_id,
+            event_code="campus.changed",
+            context={
+                "操作人": modifier_name,
+                "对象": detail_text or f"ID {target}",
+                "变更内容": action_label,
+            },
+        )
         db.commit()
     except Exception:
         pass
@@ -635,16 +674,13 @@ def create_area_api(
     if not valid:
         raise HTTPException(status_code=400, detail=msg)
     
-    # 检查区域类型是否符合要求
-    existing_areas = get_areas_by_floor(db, req.floor_id, active_only=False)
-    if existing_areas:
-        # 如果已有区域，检查新区域类型是否与现有区域类型冲突
-        area_types = {area.area_type for area in existing_areas}
-        if req.area_type in area_types and req.area_type != "merged":
-            raise HTTPException(status_code=400, detail=f"该楼层已存在{req.area_type}区域")
-        if "merged" in area_types and len(existing_areas) > 0:
-            raise HTTPException(status_code=400, detail="该楼层已合并为一个区域，无法添加新区域")
-    
+    # [调整 2026-09-12] 取消「一个楼层仅限一个区域」与区域类型互斥限制：
+    # 同一楼层现可自由划分并绑定多个区域（例如东区可关联多个区域），
+    # area_type（east/west/merged）仅作为分类标签，不再做唯一性校验。
+    # 原实现的两条限制已移除：
+    #   1) 非 merged 类型在同一楼层不可重复（导致同层不能有多个「东区」）；
+    #   2) 楼层已存在 merged 区域时禁止再新增（导致同层只能有一个区域）。
+
     area = create_area(db, req, created_by=current_user.employee_id)
     
     # [新增 2026-09-09] 区域创建审计留痕
@@ -688,18 +724,9 @@ def update_area_api(
     if not valid:
         raise HTTPException(status_code=400, detail=msg)
     
-    # 检查区域类型是否符合要求
-    if req.area_type and req.area_type != area.area_type:
-        existing_areas = get_areas_by_floor(db, floor_id, active_only=False)
-        other_areas = [a for a in existing_areas if a.id != area_id]
-        
-        if other_areas:
-            area_types = {a.area_type for a in other_areas}
-            if req.area_type in area_types and req.area_type != "merged":
-                raise HTTPException(status_code=400, detail=f"该楼层已存在{req.area_type}区域")
-            if "merged" in area_types:
-                raise HTTPException(status_code=400, detail="该楼层已合并为一个区域，无法修改区域类型")
-    
+    # [调整 2026-09-12] 同步取消更新时的区域类型互斥限制（与创建接口保持一致）：
+    # 允许同一楼层存在多个区域，且区域类型可自由调整。
+
     updated_area = update_area(db, area_id, req, updated_by=current_user.employee_id)
     if not updated_area:
         raise HTTPException(status_code=500, detail="更新区域失败")

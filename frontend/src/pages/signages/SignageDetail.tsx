@@ -2,17 +2,21 @@
 // 顶栏返回+标题+状态标签+编辑按钮，Hero区域大图+信息卡片，双栏位置+安装信息，附件资料，灯箱预览
 // [修复 2026-09-04] 新增历史版本快照查看功能
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, message, Spin, Empty, Tag, Modal, Timeline, Descriptions, Typography, Divider, List, Card } from 'antd';
-import { EditOutlined, ArrowLeftOutlined, DownloadOutlined, EyeOutlined, FileOutlined, HistoryOutlined, ClockCircleOutlined, FileSearchOutlined, ToolOutlined, SyncOutlined } from '@ant-design/icons';
+import { Button, message, Spin, Empty, Tag, Modal, Timeline, Descriptions, Typography, Divider, List, Card, Tooltip } from 'antd';
+import { EditOutlined, ArrowLeftOutlined, DownloadOutlined, EyeOutlined, FileOutlined, HistoryOutlined, ClockCircleOutlined, FileSearchOutlined, ToolOutlined, SyncOutlined, CopyOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getSignage, getSignagePhotos, getSignageHistory, getSignageInspections, getSignageRepairs } from '../../api/signage';
 import type { Signage, SignagePhoto, SignageHistory, SignageInspectionRecord, SignageRepairRecord } from '../../api/signage';
-import { hasPermission, PERM_SIGNAGE_EDIT } from '../../utils/permissions';
+// [调整 2026-09-15] 补充导入 PERM_SIGNAGE_REPAIR（维修记录）与 PERM_SIGNAGE_INSPECTION（巡检历史），
+// 用于详情页顶部「维修记录/巡检历史/查看历史版本」三个按钮的独立权限门禁（无权限直接隐藏）
+import { hasPermission, PERM_SIGNAGE_EDIT, PERM_SIGNAGE_INSPECTION, PERM_SIGNAGE_REPAIR } from '../../utils/permissions';
 // [新增 2026-09-09] 历史版本字段名与枚举值中文翻译（B1）
 import { signageFieldLabel, formatSignageFieldValue } from '../../constants/signageFields';
 import { useAuth } from '../../contexts/AuthContext';
 import { getOriginalUrl } from '../../utils/imageUtils';
 import { formatDateTimeStandard } from '../../utils/time';
+// [新增 2026-09-14] 剪贴板复制（兼容院内网 http 访问环境）
+import { copyText } from '../../utils/clipboard';
 import { QRCodeCanvas } from 'qrcode.react';
 
 // [修复 2026-09-04] CSS变量，对应参考设计稿中的颜色系统
@@ -321,6 +325,15 @@ const SignageDetail: React.FC = () => {
     fetchRepairs();
   };
 
+  /** [新增 2026-09-14] 一键复制标识编码（与标识管理列表的编码列行为一致） */
+  const handleCopyCode = async () => {
+    const code = data?.code;
+    if (!code) return;
+    const ok = await copyText(code);
+    if (ok) message.success(`已复制编码：${code}`);
+    else message.error('复制失败，请手动选中复制');
+  };
+
   // [修复 2026-09-04] 查看快照详情
   const viewSnapshotDetail = (snapshot: SignageHistory) => {
     setSelectedSnapshot(snapshot);
@@ -476,25 +489,50 @@ const SignageDetail: React.FC = () => {
                   <i style={{ background: statusInfo.color }}></i>
                   {statusInfo.label}
                 </span>
-                {data.code && <span>标识编码 {data.code}</span>}
+                {data.code && (
+                  // [调整 2026-09-14] 标识编码支持一键复制（与标识管理列表编码列一致）。
+                  // 用 inline-flex 包裹以保证图标与文字在同一基线上，高度收窄至 22px 适配 13px 文字行
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    标识编码 {data.code}
+                    <Tooltip title="复制编码">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={handleCopyCode}
+                        aria-label={`复制编码 ${data.code}`}
+                        style={{ height: 22, padding: '0 4px' }}
+                      />
+                    </Tooltip>
+                  </span>
+                )}
               </div>
             </div>
             <div className="top-actions">
-              {/* [新增 2026-09-09] 维修记录按钮：位于巡检历史旁，展示该标识全部维修记录（维修前/后照片对比） */}
-              <button className="btn-history" type="button" onClick={openRepairModal} style={ghostBtnStyle}>
-                <ToolOutlined />
-                维修记录
-              </button>
-              {/* [新增 2026-09-07] 巡检历史按钮（位于历史版本左侧） */}
-              <button className="btn-history" type="button" onClick={openInspectionModal} style={ghostBtnStyle}>
-                <FileSearchOutlined />
-                巡检历史
-              </button>
-              {/* [修复 2026-09-04] 新增查看历史版本按钮 */}
-              <button className="btn-history" type="button" onClick={openHistoryModal} style={ghostBtnStyle}>
-                <HistoryOutlined />
-                查看历史版本
-              </button>
+              {/* [新增 2026-09-09] 维修记录按钮：位于巡检历史旁，展示该标识全部维修记录（维修前/后照片对比）
+                  [调整 2026-09-15] 遵循「无权限按钮直接隐藏」规则：无 signage.repair（维修记录）权限时不渲染该按钮 */}
+              {hasPermission(user, PERM_SIGNAGE_REPAIR) && (
+                <button className="btn-history" type="button" onClick={openRepairModal} style={ghostBtnStyle}>
+                  <ToolOutlined />
+                  维修记录
+                </button>
+              )}
+              {/* [新增 2026-09-07] 巡检历史按钮（位于历史版本左侧）
+                  [调整 2026-09-15] 无 signage.inspection（标识巡检）权限时不渲染该按钮 */}
+              {hasPermission(user, PERM_SIGNAGE_INSPECTION) && (
+                <button className="btn-history" type="button" onClick={openInspectionModal} style={ghostBtnStyle}>
+                  <FileSearchOutlined />
+                  巡检历史
+                </button>
+              )}
+              {/* [修复 2026-09-04] 新增查看历史版本按钮
+                  [调整 2026-09-15] 历史版本由「版本更新」入口写入，与编辑能力配套：无 signage.edit 权限时不渲染该按钮 */}
+              {hasPermission(user, PERM_SIGNAGE_EDIT) && (
+                <button className="btn-history" type="button" onClick={openHistoryModal} style={ghostBtnStyle}>
+                  <HistoryOutlined />
+                  查看历史版本
+                </button>
+              )}
               {/* [新增 2026-09-09] 版本更新按钮（位于编辑左侧）：仅此入口的修改会写入历史版本；样式与编辑按钮一致（蓝底主按钮） */}
               {hasPermission(user, PERM_SIGNAGE_EDIT) && (
                 <button
@@ -566,6 +604,8 @@ const SignageDetail: React.FC = () => {
                         <div className="caption-item"><span className="caption-label">院区</span><span className="caption-value">{data.campus || '-'}</span></div>
                         <div className="caption-item"><span className="caption-label">楼栋</span><span className="caption-value">{data.building || '-'}</span></div>
                         <div className="caption-item"><span className="caption-label">楼层</span><span className="caption-value">{data.floor || '-'}</span></div>
+                        {/* [新增 2026-09-12] 区域：多选，逗号分隔存储，直接展示即可 */}
+                        <div className="caption-item"><span className="caption-label">区域</span><span className="caption-value">{data.area || '-'}</span></div>
                       </div>
                       <div className="caption-row">
                         <div className="caption-item"><span className="caption-label">尺寸规格</span><span className="caption-value">{data.size_spec || '-'}</span></div>
@@ -636,6 +676,8 @@ const SignageDetail: React.FC = () => {
                 <div><dt>院区</dt><dd><DisplayValue value={data.campus} /></dd></div>
                 <div><dt>楼栋</dt><dd><DisplayValue value={data.building} muted /></dd></div>
                 <div><dt>楼层</dt><dd><DisplayValue value={data.floor} muted /></dd></div>
+                {/* [新增 2026-09-12] 具体区域（选填、可多选，逗号分隔展示）；与上方「所属区域」类型区分 */}
+                <div><dt>区域</dt><dd><DisplayValue value={data.area} muted /></dd></div>
                 <div><dt>安装位置描述</dt><dd className="addr"><DisplayValue value={data.location_desc} /></dd></div>
               </dl>
             </div>
@@ -885,6 +927,10 @@ const SignageDetail: React.FC = () => {
                   </Descriptions.Item>
                   <Descriptions.Item label="楼层">
                     {JSON.parse(selectedSnapshot.snapshot ?? '{}').floor || '未填写'}
+                  </Descriptions.Item>
+                  {/* [新增 2026-09-12] 历史快照中的区域（旧快照无该字段时显示「未填写」） */}
+                  <Descriptions.Item label="区域">
+                    {JSON.parse(selectedSnapshot.snapshot ?? '{}').area || '未填写'}
                   </Descriptions.Item>
                   <Descriptions.Item label="安装位置">
                     {JSON.parse(selectedSnapshot.snapshot ?? '{}').location_desc || '未填写'}

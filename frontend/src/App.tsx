@@ -5,6 +5,12 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { BrandingProvider } from './contexts/BrandingContext';
+// [新增 2026-09-14] 功能开关 Provider（单位级功能启停，供菜单与入口显隐）
+import { FeaturesProvider } from './contexts/FeaturesContext';
+// [新增 2026-09-15] 待审核数量 Provider：左侧「信息审核」菜单角标 + 页内 Tab 角标共用
+import { ReviewBadgeProvider } from './contexts/ReviewBadgeContext';
+// [新增 2026-09-15] 站内信未读数 Provider：左侧「站内信」菜单红点 + 顶栏铃铛 + 站内信页共用
+import { MessageUnreadProvider } from './contexts/MessageUnreadContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import RoleGuard from './components/RoleGuard';
 import {
@@ -37,6 +43,8 @@ import {
   PERM_SIGNAGE_CAMPUS,
   PERM_SIGNAGE_CATEGORY,
   PERM_SIGNAGE_SUPPLIER,
+  // [新增 2026-09-15] 通知设置访问权限（角色管理中位于「系统设置」分类）
+  PERM_FEATURE_NOTIFICATION,
 } from './utils/permissions';
 import Layout from './components/Layout';
 import Login from './pages/login/Login';
@@ -58,6 +66,10 @@ import RegulationForm from './pages/regulations/RegulationForm';
 import RegulationDetail from './pages/regulations/RegulationDetail';
 import RoleList from './pages/roles/RoleList';
 import SystemSettings from './pages/settings/SystemSettings';
+// [新增 2026-09-14] 功能开关（单位级功能启停配置）
+import FeatureSettings from './pages/settings/FeatureSettings';
+// [新增 2026-09-15] 通知设置（按业务事件配置系统站内信的开关 / 文案 / 收件人）
+import NotificationSettings from './pages/settings/NotificationSettings';
 // [新增 2026-09-10] 账号设置、自助注册、信息审核
 import AccountSettings from './pages/account-settings/AccountSettings';
 import Register from './pages/register/Register';
@@ -87,6 +99,12 @@ const App: React.FC = () => {
       {/* [新增 2026-09-10] 品牌 Provider 覆盖登录页（未认证）与所有已登录页面 */}
       <BrandingProvider>
         <AuthProvider>
+          {/* [新增 2026-09-14] 功能开关 Provider：供给所有已登录页面的菜单与入口显隐判断 */}
+          <FeaturesProvider>
+          {/* [新增 2026-09-15] 待审核数量 Provider：信息审核菜单角标 + 页内 Tab 角标共用同一数据源 */}
+          <ReviewBadgeProvider>
+          {/* [新增 2026-09-15] 站内信未读数 Provider：菜单红点 / 顶栏铃铛 / 站内信页共用同一数据源 */}
+          <MessageUnreadProvider>
           <Routes>
           <Route path="/login" element={<Login />} />
           {/* [新增 2026-09-10] 登录页自助注册（公开路由，是否开放由账号设置开关决定） */}
@@ -188,6 +206,26 @@ const App: React.FC = () => {
                         </RoleGuard>
                       }
                     />
+                    {/* [新增 2026-09-14] 功能开关（单位级功能启停；与角色管理中的 feature.* 权限两层控制） */}
+                    <Route
+                      path="/feature-settings"
+                      element={
+                        <RoleGuard permissions={[PERM_SYSTEM_CONFIG]}>
+                          <FeatureSettings />
+                        </RoleGuard>
+                      }
+                    />
+                    {/* [新增 2026-09-15] 通知设置（按业务事件配置开关 / 文案 / 收件人） */}
+                    {/* [调整 2026-09-15] 门禁由 system.config 改为独立权限点 feature.notification，
+                        与角色管理「系统设置」分类下的「通知设置」权限项一一对应 */}
+                    <Route
+                      path="/notification-settings"
+                      element={
+                        <RoleGuard permissions={[PERM_FEATURE_NOTIFICATION]}>
+                          <NotificationSettings />
+                        </RoleGuard>
+                      }
+                    />
                     {/* [新增 2026-09-10] 账号设置（默认密码规则 / 登录页注册开关） */}
                     <Route
                       path="/account-settings"
@@ -258,6 +296,9 @@ const App: React.FC = () => {
             }
           />
           </Routes>
+          </MessageUnreadProvider>
+          </ReviewBadgeProvider>
+          </FeaturesProvider>
         </AuthProvider>
       </BrandingProvider>
     </BrowserRouter>

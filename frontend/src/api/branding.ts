@@ -17,6 +17,8 @@ export interface BrandingInfo {
   system_name: string;
   /** Logo 公开访问路径，未配置为空字符串 */
   logo_url: string;
+  /** 宣传标语，未配置或已被管理员清空时为空字符串（展示方据此隐藏） */
+  slogan: string;
   updated_at: string | null;
 }
 

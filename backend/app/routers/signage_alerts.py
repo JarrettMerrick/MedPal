@@ -23,6 +23,8 @@ from app.models.user import User
 from app.services.signage_alert_service import (
     get_abnormal_status, get_inspections_due_soon, get_inspections_overdue,
     get_expiring_validity, get_all_alerts,
+    # [新增 2026-09-14] 预警标识全量清单（供标识标记页高亮预警标识）
+    get_alerted_signage_map,
     # [新增 2026-09-08] 维修流程服务；[新增 2026-09-09] 按标识查询维修记录
     get_repairs_in_progress, start_repair, complete_repair, get_repairs_by_signage,
 )
@@ -30,11 +32,41 @@ from app.services.signage_alert_service import (
 # [新增 2026-09-09] 维修流程审计留痕 + 统一 IP 获取
 from app.utils import utc_now, get_client_ip
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：报修发起 / 完成通知管理方（此前只留痕不提醒）
+from app.services.modification_notify import notify_super_admins
+from app.models.signage import Signage
 from app.services.upload_service import (
     validate_image_file, detect_image_format, MAX_FILE_SIZE, UPLOAD_ROOT,
 )
 
 router = APIRouter(prefix="/api/signage-alerts", tags=["标识预警"])
+
+# [新增 2026-09-15] 维修方式中文映射（用于站内信摘要）
+_REPAIR_PARTY_LABELS = {"vendor": "供应商维修", "engineering": "工程部维修"}
+
+
+def _notify_alert_change(db: Session, current_user: User, rec, summary: str) -> None:
+    """[新增 2026-09-15] 标识报修站内信（事件：signage.alert_changed，失败静默）"""
+    try:
+        operator_name = getattr(current_user, "name", None) or current_user.employee_id
+        s = db.query(Signage).filter(Signage.id == rec.signage_id).first()
+        code = s.code if s else str(rec.signage_id)
+        s_name = s.name if s else ""
+        dept_name = getattr(getattr(s, "department", None), "name", None) if s else None
+        notify_super_admins(
+            db,
+            title=f"标识报修：{code}",
+            content=f"{operator_name} 对标识 {code}「{s_name}」执行了报修操作：{summary}",
+            related_type="signage",
+            related_id=rec.signage_id,
+            department=dept_name,
+            exclude_user_id=current_user.employee_id,
+            event_code="signage.alert_changed",
+            context={"操作人": operator_name, "标识": code, "变更内容": summary},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _save_repair_photo(file: UploadFile) -> str:
@@ -84,6 +116,20 @@ def alert_summary(current_user: User = Depends(get_current_user), db: Session = 
     if not has_permission(current_user, PERM_SIGNAGE_ALERT):
         raise HTTPException(status_code=403, detail="权限不足")
     return get_all_alerts(db)
+
+
+@router.get("/alerted-signage-ids")
+def alerted_signage_ids(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """[新增 2026-09-14] 处于预警状态的标识清单（标识ID + 预警类型名）。
+
+    供标识标记页把预警标识渲染为醒目样式（红色方框 + 感叹号）。
+    与 /summary 判定口径一致，但**不做条数截断**，保证地图上不漏标。
+    仅返回标识ID与预警类型中文名，不含任何敏感字段。
+    """
+    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
+        raise HTTPException(status_code=403, detail="权限不足")
+    mapping = get_alerted_signage_map(db)
+    return {"items": [{"id": sid, "alerts": labels} for sid, labels in mapping.items()]}
 
 
 @router.get("/abnormal-status")
@@ -187,6 +233,12 @@ def start_signage_repair(body: RepairStartRequest, request: Request = None, curr
                      target=str(rec.signage_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.alert_changed）
+    if rec.repair_party == "vendor":
+        _summary = f"发起维修（供应商: {rec.supplier_name or '未指定'}）"
+    else:
+        _summary = f"发起维修（{_REPAIR_PARTY_LABELS.get(rec.repair_party, rec.repair_party)}）"
+    _notify_alert_change(db, current_user, rec, _summary)
     return {
         "id": rec.id, "signage_id": rec.signage_id, "repair_party": rec.repair_party,
         "supplier_name": rec.supplier_name, "oa_number": rec.oa_number,
@@ -240,6 +292,11 @@ def complete_signage_repair(repair_id: int, body: RepairCompleteRequest, request
                      target=str(rec.signage_id), ip_address=client_ip)
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.alert_changed）
+    _notify_alert_change(
+        db, current_user, rec,
+        "完成维修，标识状态恢复为正常" + ("（含维修完成照片）" if rec.repair_photo else ""),
+    )
     return {
         "id": rec.id, "signage_id": rec.signage_id,
         "repair_photo": rec.repair_photo, "status": "normal",

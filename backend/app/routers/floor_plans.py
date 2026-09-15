@@ -12,12 +12,41 @@ from app.services.upload_service import delete_file
 from app.services.upload_service import save_upload_file, UPLOAD_ROOT
 # [新增 2026-09-09] 平面图/点位写操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
+# [新增 2026-09-15] 站内信提醒：平面图 / 标识点位变更后通知管理方
+from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 import os
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/floor-plans", tags=["平面图管理"])
+
+
+def _notify_floorplan_change(db: Session, current_user: User, obj_label: str, summary: str) -> None:
+    """[新增 2026-09-15] 标识平面变更站内信（平面图 / 点位共用出口，失败静默）
+
+    平面图与标识点位是「标识管理」的展示层数据，改动会直接影响终端导览与
+    大屏展示，因此在各写端点留痕后统一补发站内信（事件：signage.changed）。
+    """
+    try:
+        mod_user = db.query(User).filter(User.employee_id == current_user.employee_id).first()
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        notify_super_admins(
+            db,
+            title=f"标识平面变更：{obj_label}",
+            content=f"{modifier_name} {summary}",
+            related_type="signage",
+            exclude_user_id=current_user.employee_id,
+            event_code="signage.changed",
+            context={
+                "操作人": modifier_name,
+                "对象": obj_label,
+                "变更内容": summary,
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
 
 
 @router.get("")
@@ -52,6 +81,11 @@ def create_floor_plan_endpoint(
                      ip_address=get_client_ip(request))
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_floorplan_change(
+        db, current_user, f"平面图 #{p.id}",
+        f"创建了平面图（院区={p.campus or '未填'}，楼栋={p.building or '未填'}，楼层={p.floor or '未填'}）",
+    )
     return p
 
 
@@ -81,6 +115,9 @@ def delete_floor_plan_endpoint(
     p = get_floor_plan(db, plan_id)
     if not p:
         raise HTTPException(status_code=404, detail="平面图不存在")
+    # [新增 2026-09-15] 删除前保存位置摘要：删除 commit 后 ORM 属性失效，
+    # 站内信需要注明「删掉的是哪个位置」的平面图
+    _p_loc = f"{p.campus or ''}{p.building or ''}{p.floor or ''}" or f"ID {plan_id}"
     # [修复 2026-09-07] 删除平面图时同步清理图片物理文件（含 thumb_/orig_ 副本），避免孤儿文件
     if p.image_url:
         delete_file(p.image_url)
@@ -93,6 +130,8 @@ def delete_floor_plan_endpoint(
                      ip_address=get_client_ip(request))
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_floorplan_change(db, current_user, f"平面图 #{plan_id}", f"删除了平面图「{_p_loc}」")
     return {"message": "删除成功"}
 
 
@@ -124,6 +163,11 @@ def create_point_endpoint(
                      ip_address=get_client_ip(request))
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_floorplan_change(
+        db, current_user, f"标识点位 #{point.id}",
+        f"在平面图 #{plan_id} 上新增了标识点位（标识 ID {data.signage_id}）",
+    )
     # [修复 2026-09-05] 响应附带标识信息，保证新标记点立即按分类样式渲染
     sg = get_signage(db, data.signage_id)
     return SignagePointResponse(
@@ -193,6 +237,8 @@ def delete_point_endpoint(
                      ip_address=get_client_ip(request))
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_floorplan_change(db, current_user, f"标识点位 #{point_id}", "删除了平面图上的标识点位")
     return {"message": "删除成功"}
 
 
@@ -241,6 +287,11 @@ async def upload_floor_plan_image(
                          ip_address=get_client_ip(request))
             db.commit()
         except Exception: pass
+        # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+        _notify_floorplan_change(
+            db, current_user, f"平面图 #{plan_id}",
+            f"上传/更换了平面图底图（{file.filename}）",
+        )
 
         return p
     except Exception as e:
@@ -281,4 +332,9 @@ async def update_floor_plan_image(
                      target=str(plan_id), ip_address=get_client_ip(request))
         db.commit()
     except Exception: pass
+    # [新增 2026-09-15] 补发站内信（事件：signage.changed）
+    _notify_floorplan_change(
+        db, current_user, f"平面图 #{plan_id}",
+        "更新了平面图信息" + ("（底图已更换）" if old_image_url and p.image_url != old_image_url else ""),
+    )
     return p

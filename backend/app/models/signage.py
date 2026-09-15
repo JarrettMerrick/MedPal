@@ -25,6 +25,10 @@ class Signage(Base):
     campus = Column(String(100))
     building = Column(String(100))
     floor = Column(String(20))
+    # [新增 2026-09-12] 具体区域：当 zone_type 为「楼层导视/宣传」时可选填，支持多选，
+    # 存区域名称、多个以「,」分隔（与「院区管理」areas 表按名称对应）。
+    # 选填：为空表示未指定区域，不影响任何既有校验；模型新增列由启动自动补列覆盖。
+    area = Column(String(500))
     # [修复 2026-09-04] 新增所属区域类型字段：院区导视/宣传、楼栋导视/宣传、楼层导视/宣传
     zone_type = Column(String(30), nullable=False, default="院区导视/宣传")
     location_desc = Column(String(500))

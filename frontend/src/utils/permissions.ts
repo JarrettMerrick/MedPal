@@ -13,11 +13,22 @@ export const PERM_STAFF_STATUS = 'staff.status';
 // [新增 2026-09-11] 人员信息变更审核（立即生效 + 追认/回滚）
 // 科室管理员默认拥有（仅限管辖科室的科室级变更）；超级管理员审全部
 export const PERM_STAFF_APPROVE = 'staff.approve';
+// [新增 2026-09-15] 照片上传：控制能否上传人员形象照（正面/侧面）。
+// 本人上传自己的照片始终允许（基础能力，不校验本权限）；
+// 为他人上传需本权限且在其科室/工种数据范围内；
+// 删除照片仍由 PERM_STAFF_EDIT（修改人员信息）控制。
+export const PERM_STAFF_PHOTO_UPLOAD = 'staff.photo_upload';
+// [新增 2026-09-15] 修改历史（人员）：人员详情页「修改历史」入口与 /api/audit/history 接口访问；
+// 默认仅超级管理员拥有，可在「角色管理 → 人员管理」中按角色授予/回收。
+export const PERM_STAFF_VIEW_HISTORY = 'staff.view_history';
 // 科室管理
 export const PERM_DEPT_VIEW = 'department.view';
 export const PERM_DEPT_CREATE = 'department.create';
 export const PERM_DEPT_EDIT = 'department.edit';
 export const PERM_DEPT_DELETE = 'department.delete';
+// [新增 2026-09-15] 修改历史（科室）：科室详情页「修改历史」入口与 /api/audit/history 接口访问；
+// 默认仅超级管理员拥有，可在「角色管理 → 科室管理」中按角色授予/回收。
+export const PERM_DEPT_VIEW_HISTORY = 'department.view_history';
 // 制度管理
 export const PERM_REGULATION_VIEW = 'regulation.view';
 export const PERM_REGULATION_CREATE = 'regulation.create';
@@ -67,6 +78,18 @@ export const PERM_STAFF_VIEW_RESIGNED = 'staff.view_resigned';
 export const PERM_MESSAGE_VIEW = 'message.view';
 export const PERM_MESSAGE_SEND = 'message.send';
 export const PERM_MESSAGE_BROADCAST = 'message.broadcast';
+// [新增 2026-09-14] 功能级权限点：控制该角色能否访问对应功能。
+// 与「系统设置 → 功能开关」构成两层控制，两者都通过才放行；
+// 功能内部的具体操作仍由上面的细粒度权限（message.send / signage.create 等）控制。
+// [调整 2026-09-14] 所有功能开关权限合并为**单一**权限点「功能开关」：
+// 一个角色要么可访问全部受开关管控的模块，要么全部不可访问；
+// 各模块的单位级启停仍由「系统设置 → 功能开关」分别控制。
+export const PERM_FEATURE_ACCESS = 'feature.access';
+// [新增 2026-09-15] 通知设置：控制角色能否访问「系统设置 → 通知设置」
+// （配置系统站内信的事件开关 / 文案模板 / 收件人范围）。
+// 与 PERM_FEATURE_ACCESS 同属角色管理中的「系统设置」分类；
+// 此前通知设置复用 system.config，现已拆分为独立权限项，可单独授权。
+export const PERM_FEATURE_NOTIFICATION = 'feature.notification';
 
 /**
  * 检查用户是否有指定权限（基于服务端返回的 permissions 数组，不再硬编码角色名绕过）

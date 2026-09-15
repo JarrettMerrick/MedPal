@@ -9,7 +9,7 @@
 import React, { useEffect, useState } from 'react';
 import { usePageParams } from '../../hooks/usePageParams';
 import { useCompositionInput } from '../../hooks/useCompositionInput';
-import { Table, Button, Input, Select, Modal, Form, Checkbox, Tag, Typography, Space, Card, Alert, App } from 'antd';
+import { Table, Button, Input, Select, Modal, Form, Checkbox, Tag, Typography, Space, Card, Alert, App, Tooltip } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getRoles, createRole, updateRole, deleteRole, getPermissionsByCategory } from '../../api/roles';
 import type { Role, PermissionCategory, Permission } from '../../types/role';
@@ -210,7 +210,16 @@ const RoleList: React.FC = () => {
                     <div style={{ marginLeft: 24, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
                       {cat.permissions.map(perm => (
                         <Checkbox key={perm.id} checked={form.permission_ids.includes(perm.id)} disabled={viewOnly}
-                          onChange={() => togglePermission(perm.id)}>{perm.display_name}</Checkbox>
+                          onChange={() => togglePermission(perm.id)}>
+                          {/* [新增 2026-09-15] 悬停展示权限说明：如「照片上传」的适用范围
+                              （本人不受限 / 为他人上传受科室·工种数据范围限制）与默认启用状态，
+                              便于管理员在授予或回收时了解权限边界 */}
+                          {perm.description ? (
+                            <Tooltip title={perm.description} placement="top" mouseEnterDelay={0.4}>
+                              <span style={{ cursor: 'help' }}>{perm.display_name}</span>
+                            </Tooltip>
+                          ) : perm.display_name}
+                        </Checkbox>
                       ))}
                     </div>
                   </div>

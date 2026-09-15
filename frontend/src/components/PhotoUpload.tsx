@@ -430,6 +430,12 @@ interface PhotoUploadProps {
   onUploadSuccess: (photoUrl: string) => void;
   onDeleteSuccess?: () => void;
   disabled?: boolean;
+  /** [新增 2026-09-15] 是否允许删除已有照片；不传时沿用旧行为（随 disabled 取反）。
+   *  人员照片的删除属「修改人员信息」（staff.edit）权限范畴，与「照片上传」权限分离控制 */
+  canDelete?: boolean;
+  /** [新增 2026-09-15] 禁用原因提示：disabled 时在组件内以 Alert 展示，
+   *  用于说明为何不可上传（如「无照片上传权限」）并给出授权路径 */
+  disabledHint?: string;
   label?: string;
   /** [改进] 裁剪宽高比（宽/高），如 3:4 传 0.75；设置后上传前弹出裁剪框（允许跳过直传原图） */
   cropAspect?: number;
@@ -437,8 +443,10 @@ interface PhotoUploadProps {
 
 const PhotoUpload: React.FC<PhotoUploadProps> = ({
   type, employeeId, photoType, currentPhoto, onUploadSuccess, onDeleteSuccess,
-  disabled = false, label, cropAspect,
+  disabled = false, canDelete, disabledHint, label, cropAspect,
 }) => {
+  // [新增 2026-09-15] 删除按钮可见性：未显式传入 canDelete 时保持「非 disabled 即可删除」的旧行为
+  const canDeletePhoto = canDelete ?? !disabled;
   const { token } = useToken();
   const [preview, setPreview] = useState<string | null>(currentPhoto || null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -498,6 +506,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
 
   /** 文件选择处理：校验 → 弹裁剪框（如配置）或直接上传 */
   const handleFileSelected = async (file: File) => {
+    // [修复 2026-09-15] 兜底拦截：禁用态（无「照片上传」权限）直接忽略，
+    // 防止通过拖拽等旁路触发上传流程
+    if (disabled) return false;
     setError(null);
     const v = validateFile(file);
     if (v) { setError(v); return false; }
@@ -614,20 +625,31 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
         {/* 标题栏 */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: token.marginMD }}>
           <Text strong style={{ fontSize: token.fontSize }}>{getLabel()}</Text>
-          {thumbUrl && onDeleteSuccess && !disabled && (
+          {/* [调整 2026-09-15] 删除按钮改由 canDeletePhoto 控制：人员照片删除属「修改人员信息」权限，
+              与「照片上传」权限分开，可单独授予/回收（与后端 delete_photo 校验保持一致） */}
+          {thumbUrl && onDeleteSuccess && canDeletePhoto && (
             <Button type="link" danger size="small" icon={<DeleteOutlined />} onClick={handleDelete}>
               删除
             </Button>
           )}
         </div>
 
-        {/* 上传提示 */}
-        <Alert
-          message={`照片不大于20MB${photoType !== 'card' ? '，分辨率不小于700x700' : ''}，支持断点续传`}
-          type="info"
-          showIcon
-          style={{ marginBottom: token.marginMD, fontSize: token.fontSizeSM }}
-        />
+        {/* 上传提示：无上传权限（disabled）时改为展示禁用原因与授权路径，避免用户反复点击无效 */}
+        {disabled ? (
+          <Alert
+            message={disabledHint || '当前无上传权限，仅可查看/下载现有照片'}
+            type="warning"
+            showIcon
+            style={{ marginBottom: token.marginMD, fontSize: token.fontSizeSM }}
+          />
+        ) : (
+          <Alert
+            message={`照片不大于20MB${photoType !== 'card' ? '，分辨率不小于700x700' : ''}，支持断点续传`}
+            type="info"
+            showIcon
+            style={{ marginBottom: token.marginMD, fontSize: token.fontSizeSM }}
+          />
+        )}
 
         {/* 已上传预览 或 拖拽上传区 */}
         {thumbUrl ? (
@@ -637,29 +659,31 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
               alt={getLabel()}
               style={{ width: '100%', maxHeight: 500, objectFit: 'contain', borderRadius: token.borderRadius }}
             />
-            {!disabled && (
-              <div
-                style={{
-                  position: 'absolute',
-                  bottom: 0, left: 0, right: 0,
-                  background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)',
-                  borderRadius: `0 0 ${token.borderRadius}px ${token.borderRadius}px`,
-                  display: 'flex',
-                  justifyContent: 'center',
-                  gap: 8,
-                  padding: '12px 8px 16px',
-                  opacity: 0,
-                  transition: 'opacity 0.3s',
-                }}
-                className="photo-upload-hover-actions"
-              >
-                <Button size="small" icon={<DownloadOutlined />} onClick={downloadPhoto} ghost>
-                  下载
-                </Button>
-                <Button size="small" icon={<EyeOutlined />} onClick={() => setShowOriginal(true)} ghost>
-                  查看原图
-                </Button>
-                {/* [改进] 通过隐藏的 Upload 触发文件选择 */}
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 0, left: 0, right: 0,
+                background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)',
+                borderRadius: `0 0 ${token.borderRadius}px ${token.borderRadius}px`,
+                display: 'flex',
+                justifyContent: 'center',
+                gap: 8,
+                padding: '12px 8px 16px',
+                opacity: 0,
+                transition: 'opacity 0.3s',
+              }}
+              className="photo-upload-hover-actions"
+            >
+              {/* [调整 2026-09-15] 下载/查看原图对所有可见者开放；仅「更换照片」需上传权限，
+                  使无「照片上传」权限的用户仍可查看与留存现有照片 */}
+              <Button size="small" icon={<DownloadOutlined />} onClick={downloadPhoto} ghost>
+                下载
+              </Button>
+              <Button size="small" icon={<EyeOutlined />} onClick={() => setShowOriginal(true)} ghost>
+                查看原图
+              </Button>
+              {/* [改进] 通过隐藏的 Upload 触发文件选择 */}
+              {!disabled && (
                 <Button
                   size="small"
                   icon={<SwapOutlined />}
@@ -673,8 +697,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
                 >
                   更换照片
                 </Button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         ) : (
           /* [改进] 拖拽上传区域 */
@@ -696,18 +720,29 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
                 hiddenInput?.click();
               }
             }}
-            onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = '#0E7F8A'; }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              // [修复 2026-09-15] 无上传权限时不显示拖拽高亮，避免误导可上传
+              if (!disabled) e.currentTarget.style.borderColor = '#0E7F8A';
+            }}
             onDragLeave={(e) => { e.currentTarget.style.borderColor = '#d9d9d9'; }}
             onDrop={(e) => {
               e.preventDefault();
               e.currentTarget.style.borderColor = '#d9d9d9';
+              // [修复 2026-09-15] 禁用态（无「照片上传」权限）忽略拖拽，与点击/文件选择框拦截保持一致
+              if (disabled) return;
               const files = e.dataTransfer.files;
               if (files.length > 0) handleFileSelected(files[0]);
             }}
           >
             <InboxOutlined style={{ fontSize: 36, color: '#BFBFBF' }} />
-            <p style={{ marginTop: 8, color: '#999' }}>点击或拖拽上传照片</p>
-            <p style={{ fontSize: 12, color: '#BFBFBF', marginTop: 4 }}>支持 JPG/PNG/WebP 格式</p>
+            {/* [调整 2026-09-15] 无上传权限时明确提示不可上传及授权路径，不留「可点但无反应」的困惑 */}
+            <p style={{ marginTop: 8, color: '#999' }}>
+              {disabled ? '暂无可上传权限' : '点击或拖拽上传照片'}
+            </p>
+            <p style={{ fontSize: 12, color: '#BFBFBF', marginTop: 4 }}>
+              {disabled ? '如需上传请联系管理员授权' : '支持 JPG/PNG/WebP 格式'}
+            </p>
           </div>
         )}
 

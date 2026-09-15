@@ -198,19 +198,22 @@ const SignageAlerts: React.FC = () => {
 
   if (!data) return <Card loading={loading} />;
 
-  // [重构 2026-09-05] 预警类型：状态异常 / 维修处理中 / 7天内巡检到期 / 巡检已超期 / 临时标识即将过期
+  // [重构 2026-09-05] 预警类型：状态异常 / 维修处理中 / 7天内巡检到期 / 巡检已超期 / 临时标识有效期提醒
+  // [调整 2026-09-14] 末项由「临时标识即将过期」改名为「临时标识有效期提醒」：
+  //   该列表口径为 validity_until <= 今天+7，**同时包含已过期项**，
+  //   原名对早已过期的标识描述不准确（详见后端 signage_alert_service）。
   const alertData: AlertRow[] = [
     ...data.details.abnormal_status.map((i) => ({ ...i, type: '状态异常' })),
     ...data.details.repair_in_progress.map((i) => ({ ...i, type: '维修处理中' })),
     ...data.details.inspection_due_soon.map((i) => ({ ...i, type: '7天内巡检到期' })),
     ...data.details.inspection_overdue.map((i) => ({ ...i, type: '巡检已超期' })),
-    ...data.details.temporary_expiring.map((i) => ({ ...i, type: '临时标识即将过期' })),
+    ...data.details.temporary_expiring.map((i) => ({ ...i, type: '临时标识有效期提醒' })),
   ];
 
   const typeColor = (t: string) => {
     if (t === '状态异常' || t === '巡检已超期') return 'red';
     if (t === '维修处理中') return 'processing';
-    if (t === '临时标识即将过期') return 'volcano';
+    if (t === '临时标识有效期提醒') return 'volcano';
     return 'orange';
   };
 
@@ -234,6 +237,13 @@ const SignageAlerts: React.FC = () => {
     }
     if (r.type === '巡检已超期') {
       return <Text type="danger">已超期 {r.days_overdue} 天（应检日 {r.due_date}）</Text>;
+    }
+    if (r.type === '临时标识有效期提醒') {
+      // [新增 2026-09-14] 区分「临期」与「已过期」：days_left 为负表示已过期天数
+      if (r.days_left === undefined || r.days_left === null) return r.validity_until || '-';
+      return r.days_left < 0
+        ? <Text type="danger">已过期 {Math.abs(r.days_left)} 天（有效期至 {r.validity_until}）</Text>
+        : <Text type="warning">{r.days_left} 天后过期（{r.validity_until}）</Text>;
     }
     return r.validity_until || '-';
   };
@@ -278,7 +288,7 @@ const SignageAlerts: React.FC = () => {
         <Col span={6}><Card><Statistic title="巡检已超期" value={data.inspection_overdue} prefix={<AlertOutlined />} valueStyle={{ color: '#ff4d4f' }} /></Card></Col>
       </Row>
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={8}><Card><Statistic title="临时标识即将过期" value={data.temporary_expiring} prefix={<FieldTimeOutlined />} valueStyle={{ color: '#fa8c16' }} /></Card></Col>
+        <Col span={8}><Card><Statistic title="临时标识有效期提醒" value={data.temporary_expiring} prefix={<FieldTimeOutlined />} valueStyle={{ color: '#fa8c16' }} /></Card></Col>
         <Col span={16}>
           <Card>
             <Text type="secondary">

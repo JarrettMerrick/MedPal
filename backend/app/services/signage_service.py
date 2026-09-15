@@ -135,6 +135,8 @@ def _signage_to_snapshot(s: Signage) -> dict:
         "install_date": str(s.install_date) if s.install_date else None,
         "warranty_expire": str(s.warranty_expire) if s.warranty_expire else None,
         "campus": s.campus, "building": s.building, "floor": s.floor,
+        # [新增 2026-09-12] 所属区域（多选，逗号分隔）；历史版本快照需一并留存
+        "area": s.area,
         "location_desc": s.location_desc,
         "display_text_cn": s.display_text_cn, "display_text_en": s.display_text_en,
         "status": s.status, "oa_number": s.oa_number,

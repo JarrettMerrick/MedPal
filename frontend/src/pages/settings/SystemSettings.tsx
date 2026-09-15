@@ -36,6 +36,8 @@ interface NameFormValues {
   org_name_cn: string;
   org_name_en: string;
   system_name: string;
+  // [新增 2026-09-12] 宣传标语（显示在登录页与已登录页面底部，整串可编辑）
+  org_slogan: string;
 }
 
 /** 读取图片真实尺寸（解码后校验最小边） */
@@ -73,6 +75,7 @@ const SystemSettings: React.FC = () => {
       org_name_cn: branding.raw?.org_name_cn ?? '',
       org_name_en: branding.raw?.org_name_en ?? '',
       system_name: branding.raw?.system_name ?? '',
+      org_slogan: branding.raw?.slogan ?? '',
     });
   }, [branding.raw, form]);
 
@@ -133,7 +136,7 @@ const SystemSettings: React.FC = () => {
     });
   };
 
-  /** 保存单位名称与系统名称 */
+  /** 保存单位名称、系统名称与宣传标语 */
   const handleSaveNames = async () => {
     const values = await form.validateFields();
     setSavingNames(true);
@@ -141,8 +144,10 @@ const SystemSettings: React.FC = () => {
       await updateSystemConfig('org_name_cn', values.org_name_cn ?? '');
       await updateSystemConfig('org_name_en', values.org_name_en ?? '');
       await updateSystemConfig('system_name', values.system_name ?? '');
+      // [新增 2026-09-12] 宣传标语：清空即隐藏，前端不再渲染该区域
+      await updateSystemConfig('org_slogan', values.org_slogan ?? '');
       await branding.refresh();
-      message.success('名称已保存，全站已生效');
+      message.success('名称与标语已保存，全站已生效');
     } catch (err) {
       message.error(getErrorMessage(err, '保存失败'));
     } finally {
@@ -244,8 +249,23 @@ const SystemSettings: React.FC = () => {
               >
                 <Input placeholder="例如：XX医院信息管理系统" maxLength={100} showCount allowClear />
               </Form.Item>
+              {/* [新增 2026-09-12] 宣传标语：登录页与已登录页面底部展示，整串可编辑 */}
+              <Form.Item
+                label="宣传标语（Slogan）"
+                name="org_slogan"
+                extra="显示在登录页与已登录页面的底部；整串均可编辑（含「MedPal —」前缀），留空则隐藏该区域。仅支持纯文本，不支持富文本。"
+                rules={[{ max: 100, message: '最多 100 个字符' }]}
+              >
+                <Input
+                  placeholder="例如：MedPal — 让医院宣传更有序、更高效。"
+                  maxLength={100}
+                  showCount
+                  allowClear
+                />
+              </Form.Item>
               <Text type="secondary" style={{ fontSize: token.fontSizeSM, display: 'block', marginBottom: token.marginSM }}>
-                单位名称用于登录页品牌区、导航栏与工作台；系统名称用于登录页与首页的标题行。留空项将显示内置默认文案。
+                单位名称用于登录页品牌区、导航栏与工作台；系统名称用于登录页与首页的标题行；
+                宣传标语用于登录页与已登录页面的底部。留空项将显示内置默认文案（标语留空则不显示）。
               </Text>
               <Space>
                 <Button type="primary" loading={savingNames} onClick={handleSaveNames} disabled={!canEdit}>
@@ -257,6 +277,7 @@ const SystemSettings: React.FC = () => {
                       org_name_cn: branding.raw?.org_name_cn ?? '',
                       org_name_en: branding.raw?.org_name_en ?? '',
                       system_name: branding.raw?.system_name ?? '',
+                      org_slogan: branding.raw?.slogan ?? '',
                     })
                   }
                   disabled={!canEdit}
@@ -302,6 +323,20 @@ const SystemSettings: React.FC = () => {
               <Text style={{ color: '#fff', opacity: 0.72, fontSize: token.fontSizeSM, display: 'block', marginTop: 6 }}>
                 {branding.orgNameEn}
               </Text>
+              {/* [新增 2026-09-12] 标语预览：与实际登录页一致，标语位于页面最底部 */}
+              {branding.slogan && (
+                <div
+                  style={{
+                    marginTop: token.marginMD,
+                    paddingTop: token.marginSM,
+                    borderTop: '1px solid rgba(255,255,255,0.28)',
+                    fontSize: token.fontSizeSM,
+                    opacity: 0.85,
+                  }}
+                >
+                  {branding.slogan}
+                </div>
+              )}
             </div>
           </Col>
           <Col xs={24} md={12}>

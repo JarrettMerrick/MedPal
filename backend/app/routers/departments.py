@@ -2,6 +2,8 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 # [修复 2026-09-01] 添加 Request 导入，用于获取客户端 IP 地址记录到系统日志
+import os
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -30,9 +32,81 @@ from app.utils import get_client_ip
 
 router = APIRouter(prefix="/api/departments", tags=["科室管理"])
 
+# [修复 2026-09-15] 补齐科室字段的变更检测范围。此前只登记了 name/description，
+# 导致「仅修改科室分类 / 科室合照 / 允许工种」时变更摘要恒为「更新操作」：
+#   1) 站内信提醒以摘要为内容且会跳过无实质变更的「更新操作」→ 修改无人被提醒；
+#   2) 科室详情页「修改历史」里也看不到任何字段级记录（摘要无字段可比对）。
 DEPT_FIELD_LABELS = {
     "name": "科室名称", "description": "科室介绍",
+    "category": "科室分类", "group_photo": "科室合照",
+    "allowed_work_types": "允许工种",
 }
+
+
+def _photo_state(path: str | None) -> str:
+    """科室合照的可读状态：只保留文件名，避免把服务器磁盘路径写进修改历史/站内信"""
+    return os.path.basename(path) if path else "未设置"
+
+
+def _work_types_label(raw: str | None) -> str:
+    """把逗号分隔的工种代码转为可读文案（如 doctor,nurse → 医生、护士）"""
+    if not raw:
+        return "未设置"
+    # 延迟导入避免与 schemas 层产生模块级循环引用
+    from app.schemas.staff import WORK_TYPE_LABELS
+    codes = [p.strip() for p in str(raw).split(",") if p.strip()]
+    labels = [WORK_TYPE_LABELS.get(code, code) for code in codes]
+    return "、".join(labels) if labels else "未设置"
+
+
+def _record_dept_change(
+    db: Session, request: Request | None, current_user: User, dept,
+    change_summary: str, event_code: str, fallback_title: str,
+) -> int:
+    """科室变更的「留痕 + 站内信提醒」统一出口（新建/删除/合照/特色技术·设备图片共用）
+
+    [新增 2026-09-15] 此前只有「编辑科室」主接口（PUT）同时做了留痕与提醒，同一
+    科室下的新建、删除、合照上传/删除、特色技术·设备图片增删改都属于「改了却无人
+    可知、多数连留痕都没有」。这里统一补上，口径与主接口完全一致：
+
+        - 留痕：写 modification_history（entity_type=department），可在科室详情页
+          的「修改历史」与系统日志中追溯；
+        - 提醒：走 notify_super_admins → 通知中心，收件人为「超管 + 该科室相关科室
+          管理员（自动排除操作者本人）」，若无人可收则回落给操作者本人作为操作回执；
+        - 留痕与提醒都做异常隔离，任何一侧失败都不影响业务主流程。
+
+    返回实际收件人数（0 表示未产生站内信）。
+    """
+    try:
+        record_modification(
+            db, entity_type="department", entity_id=str(dept.id),
+            modified_by=current_user.employee_id,
+            change_summary=change_summary,
+            ip_address=get_client_ip(request) if request is not None else None,
+        )
+    except Exception:
+        pass
+
+    try:
+        mod_user = get_user(db, current_user.employee_id)
+        modifier_name = mod_user.name if mod_user else current_user.employee_id
+        return notify_super_admins(
+            db, title=fallback_title,
+            content=f"{modifier_name} 修改了科室 {dept.name}(ID:{dept.id}) 的{change_summary}",
+            related_type="department",
+            related_id=dept.id,
+            department=dept.name,
+            exclude_user_id=current_user.employee_id,
+            event_code=event_code,
+            context={
+                "操作人": modifier_name,
+                "科室": dept.name,
+                "科室ID": str(dept.id),
+                "变更内容": change_summary,
+            },
+        )
+    except Exception:
+        return 0
 
 
 def _can_manage_dept_category(user: User, category: str) -> bool:
@@ -132,6 +206,8 @@ def get_department_staff_stats(
 @router.post("", response_model=DepartmentOut, status_code=201)
 def create_department_api(
     req: DepartmentCreate,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -140,6 +216,14 @@ def create_department_api(
     # [修复 2026-09-02] 修复 create_department 调用参数错位：allowed_work_types 被遗漏，
     # 导致 specialties 列表被误传为 allowed_work_types 字符串，保存时 422 校验失败。
     dept = create_department(db, req.name, req.description, req.category, req.allowed_work_types, req.specialties, req.equipments)
+    # [新增 2026-09-15] 新建科室此前既无留痕也无提醒（改了无人知、事后查不到），
+    # 现补上：先 flush 取得自增主键，再写修改留痕 + 发站内信。
+    db.flush()
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"新建科室(分类: {dept.category or '未设置'})",
+        event_code="department.created", fallback_title="新增科室",
+    )
     db.commit()
     return dept
 
@@ -169,12 +253,29 @@ def update_department_api(
         if name_changed or category_changed:
             raise HTTPException(status_code=403, detail="仅管理员可修改科室名称和分类")
 
-    old_data = {"name": dept.name, "description": dept.description}
+    # [修复 2026-09-15] 变更检测补齐 category / group_photo / allowed_work_types。
+    # 此前只比对 name/description，导致「仅修改科室分类 / 合照 / 允许工种」时摘要恒为
+    # 「更新操作」→ 站内信被跳过（提醒以摘要为内容）、修改历史里也查不到字段级记录。
+    # 值统一转为可读文案（工种代码→中文、合照路径→文件名），保证历史与通知可读。
+    old_data = {
+        "name": dept.name,
+        "description": dept.description,
+        "category": dept.category,
+        "group_photo": _photo_state(dept.group_photo),
+        "allowed_work_types": _work_types_label(dept.allowed_work_types),
+    }
     update_data = {}
     if req.name is not None:
         update_data["name"] = req.name
     if req.description is not None:
         update_data["description"] = req.description
+    if req.category is not None:
+        update_data["category"] = req.category
+    if req.group_photo is not None:
+        # 合照替换时新旧都是文件名 → 文件名不同即判定为已变更，替换行为同样可追溯
+        update_data["group_photo"] = _photo_state(req.group_photo)
+    if req.allowed_work_types is not None:
+        update_data["allowed_work_types"] = _work_types_label(req.allowed_work_types)
     change_summary = build_change_summary(old_data, update_data, DEPT_FIELD_LABELS)
 
     # [改进] 追加特色技术/设备的增删改摘要，使审计记录覆盖全部关联变更
@@ -205,22 +306,15 @@ def update_department_api(
     if not dept:
         raise HTTPException(status_code=404, detail="科室不存在")
 
-    # [修复 2026-09-01] 传递客户端 IP 到 record_modification，记录到系统日志
-    client_ip = get_client_ip(request)
-    mod_record = record_modification(db, entity_type="department", entity_id=str(department_id),
-                                     modified_by=current_user.employee_id, change_summary=change_summary,
-                                     ip_address=client_ip)
-    # [调整 2026-09-11] 站内信提醒：超管 + 该科室的相关科室管理员（自动排除操作者本人）
+    # [调整 2026-09-15] 留痕与站内信提醒统一走 _record_dept_change，与新建/删除/
+    # 合照/特色技术图片等接口保持完全一致的口径（原实现此处内联重复代码）。
+    # 摘要为「更新操作」说明没有任何被跟踪字段发生变化（含无意义的空保存），
+    # 此时不写留痕也不发提醒，避免污染修改历史并产生噪音通知。
     if change_summary != "更新操作":
-        mod_user = get_user(db, current_user.employee_id)
-        modifier_name = mod_user.name if mod_user else current_user.employee_id
-        notify_super_admins(db,
-            title="科室信息被修改",
-            content=f"{modifier_name} 修改了科室 {dept.name}(ID:{department_id}) 的{change_summary}",
-            related_type="department",
-            related_id=department_id,
-            department=dept.name,
-            exclude_user_id=current_user.employee_id)
+        _record_dept_change(
+            db, request, current_user, dept, change_summary,
+            event_code="department.updated", fallback_title="科室信息被修改",
+        )
     db.commit()
     return dept
 
@@ -229,6 +323,8 @@ def update_department_api(
 async def upload_specialty_image(
     department_id: int,
     specialty_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     caption: str = Form("", max_length=20),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -267,6 +363,14 @@ async def upload_specialty_image(
 
     # 创建图片记录
     img = create_specialty_image(db, specialty_id, file_path, caption, sort_order=len(existing))
+    # [新增 2026-09-15] 科室宣传图（特色技术图片）增删改此前完全无留痕无提醒，
+    # 现补上：写入科室修改历史 + 站内信（事件：科室特色技术/设备变更）
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"特色技术「{specialty.name}」图片(新增1张)",
+        event_code="department.specialty_changed",
+        fallback_title="科室特色技术/设备变更",
+    )
     db.commit()
     db.refresh(img)
     return img
@@ -278,6 +382,8 @@ def update_specialty_image_caption(
     specialty_id: int,
     image_id: int,
     req: SpecialtyImageUpdate,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -300,10 +406,27 @@ def update_specialty_image_caption(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
-    if req.caption is not None:
+    # [修复 2026-09-15] 仅在备注确实变化时才写入，避免前端回传原值时产生无意义的
+    # 留痕与提醒（摘要为「xxx → xxx」等于没改）
+    if req.caption is not None and req.caption != (img.caption or ""):
         if len(req.caption) > 20:
             raise HTTPException(status_code=400, detail="备注不能超过20字")
+        old_caption = img.caption or "未设置"
         img.caption = req.caption
+        # [新增 2026-09-15] 图片备注变更补留痕 + 站内信提醒（原来改了无人可知）
+        specialty = db.query(DepartmentSpecialty).filter(
+            DepartmentSpecialty.id == specialty_id,
+        ).first()
+        specialty_name = specialty.name if specialty else f"ID:{specialty_id}"
+        _record_dept_change(
+            db, request, current_user, dept,
+            change_summary=(
+                f"特色技术「{specialty_name}」图片备注: "
+                f"{old_caption} → {req.caption or '未设置'}"
+            ),
+            event_code="department.specialty_changed",
+            fallback_title="科室特色技术/设备变更",
+        )
 
     db.commit()
     db.refresh(img)
@@ -315,6 +438,8 @@ def delete_specialty_image_api(
     department_id: int,
     specialty_id: int,
     image_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -336,9 +461,22 @@ def delete_specialty_image_api(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
+    # [新增 2026-09-15] 图片删除前先取特色技术名称，用于生成可读的变更摘要
+    specialty = db.query(DepartmentSpecialty).filter(
+        DepartmentSpecialty.id == specialty_id,
+    ).first()
+    specialty_name = specialty.name if specialty else f"ID:{specialty_id}"
+
     image_url = img.image_url
     delete_specialty_image(db, image_id)
     delete_file(image_url)
+    # 补留痕 + 站内信提醒（原来删图完全无记录、无人可知）
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"特色技术「{specialty_name}」图片(删除1张)",
+        event_code="department.specialty_changed",
+        fallback_title="科室特色技术/设备变更",
+    )
     db.commit()
     return {"message": "图片删除成功"}
 
@@ -349,6 +487,8 @@ def delete_specialty_image_api(
 async def upload_equipment_image(
     department_id: int,
     equipment_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     caption: str = Form("", max_length=20),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -387,6 +527,13 @@ async def upload_equipment_image(
 
     # 创建图片记录
     img = create_equipment_image(db, equipment_id, file_path, caption, sort_order=len(existing))
+    # [新增 2026-09-15] 设备图片上传此前完全无留痕无提醒，现补上（事件：科室特色技术/设备变更）
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"设备「{equipment.name}」图片(新增1张)",
+        event_code="department.specialty_changed",
+        fallback_title="科室特色技术/设备变更",
+    )
     db.commit()
     db.refresh(img)
     return img
@@ -398,6 +545,8 @@ def update_equipment_image_caption(
     equipment_id: int,
     image_id: int,
     req: EquipmentImageUpdate,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -419,10 +568,27 @@ def update_equipment_image_caption(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
-    if req.caption is not None:
+    # [修复 2026-09-15] 仅在备注确实变化时才写入，避免前端回传原值时产生无意义的
+    # 留痕与提醒（摘要为「xxx → xxx」等于没改）
+    if req.caption is not None and req.caption != (img.caption or ""):
         if len(req.caption) > 20:
             raise HTTPException(status_code=400, detail="备注不能超过20字")
+        old_caption = img.caption or "未设置"
         img.caption = req.caption
+        # [新增 2026-09-15] 设备图片备注变更补留痕 + 站内信提醒
+        equipment = db.query(DepartmentEquipment).filter(
+            DepartmentEquipment.id == equipment_id,
+        ).first()
+        equipment_name = equipment.name if equipment else f"ID:{equipment_id}"
+        _record_dept_change(
+            db, request, current_user, dept,
+            change_summary=(
+                f"设备「{equipment_name}」图片备注: "
+                f"{old_caption} → {req.caption or '未设置'}"
+            ),
+            event_code="department.specialty_changed",
+            fallback_title="科室特色技术/设备变更",
+        )
 
     db.commit()
     db.refresh(img)
@@ -434,6 +600,8 @@ def delete_equipment_image_api(
     department_id: int,
     equipment_id: int,
     image_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -455,9 +623,22 @@ def delete_equipment_image_api(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
+    # [新增 2026-09-15] 删除前先取设备名称，用于生成可读的变更摘要
+    equipment = db.query(DepartmentEquipment).filter(
+        DepartmentEquipment.id == equipment_id,
+    ).first()
+    equipment_name = equipment.name if equipment else f"ID:{equipment_id}"
+
     image_url = img.image_url
     delete_equipment_image(db, image_id)
     delete_file(image_url)
+    # 补留痕 + 站内信提醒（原来删图完全无记录、无人可知）
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"设备「{equipment_name}」图片(删除1张)",
+        event_code="department.specialty_changed",
+        fallback_title="科室特色技术/设备变更",
+    )
     db.commit()
     return {"message": "图片删除成功"}
 
@@ -467,6 +648,8 @@ def delete_equipment_image_api(
 @router.post("/{department_id}/group-photo")
 async def upload_group_photo(
     department_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -492,8 +675,19 @@ async def upload_group_photo(
     if dept.group_photo:
         delete_file(dept.group_photo)
 
+    old_photo_basename = os.path.basename(dept.group_photo) if dept.group_photo else ""
     dept.group_photo = file_path
     dept.updated_by = current_user.employee_id
+    # [新增 2026-09-15] 科室合照上传/替换此前完全无留痕无提醒，现补上：
+    # 替换时摘要记录「旧文件名 → 新文件名」，便于追溯是哪张照片被换掉。
+    change_summary = (
+        f"科室合照: {old_photo_basename} → {os.path.basename(file_path)}"
+        if old_photo_basename else f"科室合照(上传: {os.path.basename(file_path)})"
+    )
+    _record_dept_change(
+        db, request, current_user, dept, change_summary=change_summary,
+        event_code="department.photo_changed", fallback_title="科室合照变更",
+    )
     db.commit()
     return {"group_photo": file_path, "message": "合照上传成功"}
 
@@ -501,6 +695,8 @@ async def upload_group_photo(
 @router.delete("/{department_id}/group-photo")
 def delete_group_photo(
     department_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -512,9 +708,16 @@ def delete_group_photo(
         raise HTTPException(status_code=403, detail="无权限操作")
 
     if dept.group_photo:
+        old_photo_basename = os.path.basename(dept.group_photo)
         delete_file(dept.group_photo)
         dept.group_photo = None
         dept.updated_by = current_user.employee_id
+        # [新增 2026-09-15] 删除科室合照补留痕 + 站内信提醒（摘要保留被删文件名）
+        _record_dept_change(
+            db, request, current_user, dept,
+            change_summary=f"科室合照(删除: {old_photo_basename})",
+            event_code="department.photo_changed", fallback_title="科室合照变更",
+        )
         db.commit()
 
     return {"message": "合照已删除"}
@@ -523,6 +726,8 @@ def delete_group_photo(
 @router.delete("/{department_id}")
 def delete_department_api(
     department_id: int,
+    # [新增 2026-09-15] 注入 Request，用于把操作客户端 IP 写入修改留痕
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -546,6 +751,15 @@ def delete_department_api(
         raise HTTPException(status_code=400, detail="该科室下仍有特色技术，无法删除")
     if db.query(DepartmentEquipment).filter(DepartmentEquipment.department_id == department_id).first():
         raise HTTPException(status_code=400, detail="该科室下仍有设备，无法删除")
+
+    # [新增 2026-09-15] 删除科室是高敏感操作，此前既无留痕也无提醒。
+    # 在真正删除前写入（与删除动作处于同一事务：删除失败会一并回滚），
+    # 这样科室名/ID 仍然可用，且通知收件人（该科室相关科室管理员）能被正确解析。
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=f"删除科室(分类: {dept.category or '未设置'})",
+        event_code="department.deleted", fallback_title="删除科室",
+    )
 
     if not delete_department(db, department_id):
         raise HTTPException(status_code=404, detail="科室不存在")
