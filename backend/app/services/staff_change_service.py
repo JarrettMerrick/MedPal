@@ -48,7 +48,8 @@ from app.models.user import User
 from app.services import message_service
 # [新增 2026-09-15] 可配置通知中心（待审核 / 审核结果 / 超时提醒统一走事件规则）
 from app.services import notification_center
-from app.utils import utc_now
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import utc_now, to_iso_utc
 
 logger = logging.getLogger("staff_change")
 
@@ -721,17 +722,19 @@ def serialize(req: StaffChangeRequest, viewer: User | None = None, db: Session |
         "source": req.source,
         "submitted_by": req.submitted_by,
         "submitted_by_name": req.submitted_by_name,
-        "submitted_at": req.submitted_at.isoformat() if req.submitted_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "submitted_at": to_iso_utc(req.submitted_at),
         "reviewed_by": req.reviewed_by,
         "reviewed_by_name": req.reviewed_by_name,
-        "reviewed_at": req.reviewed_at.isoformat() if req.reviewed_at else None,
+        "reviewed_at": to_iso_utc(req.reviewed_at),
         "reject_reason": req.reject_reason,
         "review_note": req.review_note,
         "rolled_back": req.rolled_back,
         "rollback_note": req.rollback_note,
         "conflict_fields": json.loads(req.conflict_fields) if req.conflict_fields else [],
-        "reminded_at": req.reminded_at.isoformat() if req.reminded_at else None,
-        "escalated_at": req.escalated_at.isoformat() if req.escalated_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "reminded_at": to_iso_utc(req.reminded_at),
+        "escalated_at": to_iso_utc(req.escalated_at),
         "can_review": can,
     }
 
@@ -825,7 +828,8 @@ def pending_badge(db: Session, rows: list[StaffChangeRequest]) -> dict | None:
         "change_summary": latest.change_summary,
         "changed_labels": [FIELD_LABELS.get(f, f) for f in json.loads(latest.changed_fields or "[]")],
         "submitted_by_name": latest.submitted_by_name,
-        "submitted_at": latest.submitted_at.isoformat() if latest.submitted_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "submitted_at": to_iso_utc(latest.submitted_at),
         "escalated": bool(latest.escalated_at),
     }
 

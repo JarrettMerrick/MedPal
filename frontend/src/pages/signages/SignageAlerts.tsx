@@ -25,6 +25,8 @@ import { getActiveSuppliers } from '../../api/signage-settings';
 import type { Supplier } from '../../api/signage-settings';
 import { startSignageRepair, completeSignageRepair, uploadRepairPhoto } from '../../api/signage';
 import { compressImageFile } from '../../utils/imageUtils';
+// [统一时间口径] 时间展示一律走 utils/time，禁止直接拼接时间字符串
+import { formatDateTimeStandard } from '../../utils/time';
 
 const { Text } = Typography;
 
@@ -228,7 +230,8 @@ const SignageAlerts: React.FC = () => {
         : '工程部维修';
       return (
         <Text type="secondary">
-          {party}{r.oa_number ? ` · OA单号 ${r.oa_number}` : ''}{r.started_at ? ` · 发起于 ${r.started_at}` : ''}
+          {party}{r.oa_number ? ` · OA单号 ${r.oa_number}` : ''}
+          {r.started_at ? ` · 发起于 ${formatDateTimeStandard(r.started_at)}` : ''}
         </Text>
       );
     }

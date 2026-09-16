@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
-from datetime import datetime, timezone
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -169,21 +167,14 @@ def get_current_user(
     # 角色与 role_id 的一致性改由管理操作（用户/角色编辑接口）统一保证。
 
     # 检查 token 是否在密码修改之前签发
-    pwd_changed_at = payload.get("pwd_changed_at")
-    if pwd_changed_at and user.password_changed_at:
-        token_time = datetime.fromtimestamp(pwd_changed_at, tz=timezone.utc)
-        # SQLite返回不带时区的datetime，数据库统一存储UTC时间，直接比较即可
-        pwd_changed = user.password_changed_at
-        if pwd_changed.tzinfo is None:
-            from app.utils import BEIJING_TZ
-            pwd_changed = pwd_changed.replace(tzinfo=BEIJING_TZ).astimezone(timezone.utc)
-        elif pwd_changed.tzinfo != timezone.utc:
-            pwd_changed = pwd_changed.astimezone(timezone.utc)
-        if token_time < pwd_changed:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="密码已修改，请重新登录",
-            )
+    # [修复] 统一走 is_token_stale_after_password_change（UTC 比较 + 缺失内嵌值按失效处理），
+    # 原实现存在漏判与 8 小时时区偏移，详见 utils 中该函数说明。
+    from app.utils import is_token_stale_after_password_change
+    if is_token_stale_after_password_change(payload.get("pwd_changed_at"), user.password_changed_at):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="密码已修改，请重新登录",
+        )
     return user
 
 
@@ -192,16 +183,31 @@ def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db),
 ) -> User | None:
-    """可选获取当前用户（用于某些公开接口）"""
+    """可选获取当前用户（用于某些公开接口）。
+
+    [修复] 与 get_current_user 口径保持一致：黑名单 / 账号启用 / 改密失效校验。
+    原实现只解析 token 就返回用户，导致「已登出的 access token」与「改密前签发的旧
+    token」在依赖本函数的接口（如导出包下载 download_package）上仍被视为有效，
+    改密/登出后仍可继续下载导出包等敏感数据，直至令牌自然过期。
+    """
     if credentials is None:
         return None
-    payload = decode_token(credentials.credentials)
+    token = credentials.credentials
+    if is_token_blacklisted(db, token):
+        return None
+    payload = decode_token(token)
     if payload is None:
         return None
     employee_id = payload.get("sub")
     if not employee_id:
         return None
-    return db.query(User).filter(User.employee_id == employee_id).first()
+    user = db.query(User).filter(User.employee_id == employee_id).first()
+    if not user or not user.is_active:
+        return None
+    from app.utils import is_token_stale_after_password_change
+    if is_token_stale_after_password_change(payload.get("pwd_changed_at"), user.password_changed_at):
+        return None
+    return user
 
 
 # ==================== 自定义角色权限检查 ====================

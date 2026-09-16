@@ -1,9 +1,8 @@
-# MedPal 医院宣传信息管理系统 V1.2.1
+# MedPal 医院宣传信息管理系统 V1.2.3
 
 - **仓库地址**：https://github.com/zjmnt1992/MedPal
-- **演示地址**：https://www.medpal.ink/ 演示账号及密码邮件发送邮件至zjm20@vip.qqcom获取
+- **演示地址**：https://www.medpal.ink/ 演示账号及密码请邮件至 zjm20@vip.qq.com 获取
 
-> ⚠️ **部署提示**：因医院信息安全要求，不建议公网部署；无内网 DNS 可关闭 Nginx 部署。
 > ⚠️ **容量建议**：本系统结构轻量且简单，适合服务器存储资源紧张的单位使用，总用户数不建议超过 3000，并发不建议超过 50。
 
 基于 Python FastAPI + React + SQLite 的轻量化医护信息管理系统：内置完整权限体系（50 个权限点）、三级变更审核、标识台账与平面打点、单位级功能开关、通知中心与自动运维能力，开箱即用、无需复杂数据库迁移。
@@ -33,7 +32,6 @@
 | 前端 | React 18 · TypeScript 5.6 · Vite 5 · Ant Design 5 · TailwindCSS 3 · Recharts · wangEditor |
 | 数据库 | SQLite（默认 WAL 模式，可切换 DELETE 以适配 Windows 挂载卷） |
 | 核心能力 | JWT 双 Token 认证 · 文件分片上传 · Excel 导入导出 · 服务端二维码生成 · 富文本清洗 |
-| 部署 | Nginx + Uvicorn + Supervisor 单容器一体化部署（部署配置由运维侧单独维护，不随本仓库分发） |
 
 ---
 

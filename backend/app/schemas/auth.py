@@ -60,6 +60,19 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=50)
 
 
+class ChangePasswordResponse(BaseModel):
+    """改密成功响应：一并返回为「当前会话」重新签发的令牌。
+
+    [修复] 改密会推进 password_changed_at，使所有旧 token（含本机当前 access/refresh）
+    失效；若不重新签发，用户改密成功即掉登录。refresh_token 仍走 HttpOnly Cookie 轮换，
+    不在响应体暴露。
+    """
+    message: str = "密码修改成功"
+    access_token: str
+    file_token: str = ""
+    token_type: str = "bearer"
+
+
 class TokenRefreshRequest(BaseModel):
     # [修复/问题3] refresh_token 优先从 HttpOnly Cookie 读取，
     # 请求体字段转为可选，仅为兼容尚未升级的旧客户端。

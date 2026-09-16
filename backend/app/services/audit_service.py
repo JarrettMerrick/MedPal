@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models.audit_log import ModificationHistory
 from app.models.user import User
-from app.utils import utc_now
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import utc_now, to_iso_utc
 
 
 def record_modification(
@@ -322,7 +323,8 @@ def get_modification_history(
         fields, notes = parse_change_summary(row.change_summary)
         items.append({
             "id": row.id,
-            "modified_at": row.modified_at.isoformat() if row.modified_at else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "modified_at": to_iso_utc(row.modified_at),
             "modified_by": row.modified_by,
             "modified_by_name": name_map.get(row.modified_by) or row.modified_by or "系统",
             "fields": fields,

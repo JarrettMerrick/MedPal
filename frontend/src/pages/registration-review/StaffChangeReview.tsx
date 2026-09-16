@@ -23,6 +23,8 @@ import {
   type StaffChangeItem,
 } from '../../api/staffChanges';
 import { getErrorMessage } from '../../utils/format';
+// [统一时间口径] 时间展示一律走 utils/time
+import { formatDateTimeStandard } from '../../utils/time';
 // [新增 2026-09-15] 审核完成后刷新待审角标（Tab 与左侧「信息审核」菜单同源）
 import { useReviewBadge } from '../../contexts/ReviewBadgeContext';
 
@@ -44,8 +46,10 @@ const SOURCE_LABELS: Record<string, string> = {
   photo: '照片上传',
 };
 
+// [统一时间口径] 原 new Date(value).toLocaleString() 会把后端无时区标记的 UTC 串
+// 按浏览器本地时区解释（显示比实际少 8 小时），统一改走 utils/time
 const formatTime = (value: string | null): string =>
-  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--';
+  value ? formatDateTimeStandard(value) : '--';
 
 const StaffChangeReview: React.FC<{ focusId?: number }> = ({ focusId }) => {
   const { message, modal } = App.useApp();

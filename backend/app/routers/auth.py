@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -15,6 +13,7 @@ from app.models.department import Department
 from app.models.staff import Staff
 from app.schemas.auth import (
     ChangePasswordRequest,
+    ChangePasswordResponse,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -265,17 +264,17 @@ def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在或已被禁用",
         )
-    # 检查 token 是否在密码修改之前签发（统一使用 UTC 比较）
-    pwd_changed_at = payload.get("pwd_changed_at")
-    if pwd_changed_at and user.password_changed_at:
-        from app.utils import BEIJING_TZ
-        token_time = datetime.fromtimestamp(pwd_changed_at, tz=BEIJING_TZ).replace(tzinfo=None)
-        if token_time < user.password_changed_at:
-            _clear_refresh_cookie(request, response)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="密码已修改，请重新登录",
-            )
+    # 检查 token 是否在密码修改之前签发
+    # [修复] 统一走 is_token_stale_after_password_change（UTC 比较 + 缺失内嵌值按失效处理）：
+    # 原实现把 token 时间戳按北京时间解释、又用 `if 内嵌值 and 用户值` 跳过缺失值，
+    # 导致改密/重置后旧 refresh token 仍能通过本接口换发新令牌（会话被"洗白"）。
+    from app.utils import is_token_stale_after_password_change
+    if is_token_stale_after_password_change(payload.get("pwd_changed_at"), user.password_changed_at):
+        _clear_refresh_cookie(request, response)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="密码已修改，请重新登录",
+        )
 
     new_access_token = create_access_token_with_password_info(
         data={"sub": user.employee_id, "role": user.role},
@@ -340,10 +339,11 @@ def logout(
     return {"message": "登出成功"}
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=ChangePasswordResponse)
 def change_user_password(
     req: ChangePasswordRequest,
     request: Request,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -396,7 +396,41 @@ def change_user_password(
         db.commit()
     except Exception:
         db.rollback()
-    return {"message": "密码修改成功"}
+
+    # [修复] 改密后为「当前会话」重新签发令牌。
+    # change_password 已刷新 user.password_changed_at，所有旧 token（含本机当前
+    # access_token 与 refresh Cookie）都会因时间戳推进而失效；若不重新签发，用户会在
+    # 改密成功的一刻被踢下线。这里续发新令牌令当前设备无缝延续，
+    # 其他设备/被盗会话则全部失效 —— 即「改密 = 所有旧会话作废，当前会话重新发证」。
+    new_access_token = create_access_token_with_password_info(
+        data={"sub": current_user.employee_id, "role": current_user.role},
+        password_changed_at=current_user.password_changed_at,
+    )
+    from app.utils import create_file_access_token
+    new_file_token = create_file_access_token(current_user.employee_id)
+
+    # 轮换 refresh Cookie（若本次请求携带）：旧 refresh 同样已失效，主动换新并拉黑旧值，
+    # 避免用户下次静默刷新时被判「密码已修改」而掉登录。
+    refresh_cookie = request.cookies.get(REFRESH_COOKIE_NAME)
+    if refresh_cookie:
+        rt_payload = decode_token(refresh_cookie)
+        if rt_payload and rt_payload.get("sub") == current_user.employee_id:
+            remember_me = bool(rt_payload.get("remember_me", False))
+            blacklist_token(db, refresh_cookie, token_type="refresh",
+                            employee_id=current_user.employee_id, reason="password_changed")
+            new_refresh_token = create_refresh_token_with_password_info(
+                data={"sub": current_user.employee_id},
+                password_changed_at=current_user.password_changed_at,
+                remember_me=remember_me,
+            )
+            db.commit()
+            _set_refresh_cookie(request, response, new_refresh_token, remember_me=remember_me)
+
+    return ChangePasswordResponse(
+        message="密码修改成功",
+        access_token=new_access_token,
+        file_token=new_file_token,
+    )
 
 
 @router.get("/me", response_model=UserInfo)

@@ -50,7 +50,8 @@ from app.services.system_config_service import (
     REGISTRATION_ENABLED_KEY,
     get_config_value,
 )
-from app.utils import get_client_ip, hash_password, utc_now, verify_password
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import get_client_ip, hash_password, utc_now, verify_password, to_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -346,8 +347,9 @@ def _task_payload(task: PasswordResetTask) -> dict:
         "self_included": bool(task.self_included),
         "message": task.message,
         "error": task.error,
-        "created_at": task.created_at.isoformat() if task.created_at else None,
-        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "created_at": to_iso_utc(task.created_at),
+        "finished_at": to_iso_utc(task.finished_at),
     }
 
 

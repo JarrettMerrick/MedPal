@@ -16,6 +16,8 @@ interface AuthState {
   login: (employeeId: string, password: string, rememberMe?: boolean) => Promise<void>;
   logout: () => void;
   setUser: (user: UserInfo) => void;
+  /** [修复] 应用改密后后端重新签发的令牌（access/file token），保持当前会话在线 */
+  applyAuthTokens: (accessToken: string, fileToken?: string) => void;
 }
 
 const AuthContext = createContext<AuthState>(null!);
@@ -89,6 +91,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(res.user);
   };
 
+  /**
+   * [修复] 应用「改密后重新签发」的令牌。
+   * 改密会推进 password_changed_at 令旧令牌（含本机）全部失效；后端为当前会话
+   * 续发新 access/file token 并轮换 refresh Cookie，这里同步到内存与渲染态，
+   * 使当前设备不被踢下线，其余设备因旧令牌失效而需重新登录。
+   */
+  const applyAuthTokens = (accessToken: string, fileToken?: string) => {
+    setAccessToken(accessToken);
+    if (fileToken) setFileToken(fileToken);
+    setToken(accessToken);
+  };
+
   const logout = () => {
     // refresh_token 位于 HttpOnly Cookie，后端登出接口会自行读取并吊销/清除，
     // 这里只需把当前 access_token 传过去加入黑名单。
@@ -113,6 +127,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         logout,
         setUser,
+        applyAuthTokens,
       }}
     >
       {children}

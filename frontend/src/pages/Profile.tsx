@@ -30,6 +30,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { updateProfile, getMe } from '../api/auth';
 import { getDepartmentsByCategory } from '../api/departments';
 import { getStaff } from '../api/staff';
+// [统一时间口径] 时间展示一律走 utils/time
+import { formatDateTimeStandard } from '../utils/time';
 import {
   cancelStaffChange,
   listMyStaffChanges,
@@ -61,8 +63,10 @@ const CHANGE_STATUS_META: Record<string, { color: string; label: string }> = {
   cancelled: { color: 'gray', label: '已撤回' },
 };
 
+// [统一时间口径] 原 new Date(value).toLocaleString() 会把后端无时区标记的 UTC 串
+// 按浏览器本地时区解释（显示比实际少 8 小时），统一改走 utils/time
 const formatTime = (value: string | null): string =>
-  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--';
+  value ? formatDateTimeStandard(value) : '--';
 
 const Profile: React.FC = () => {
   const navigate = useNavigate();

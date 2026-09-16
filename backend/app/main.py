@@ -200,7 +200,7 @@ class RequestLogMiddleware:
 
 
 # ── 应用实例 ─────────────────────────────────────────────────────────
-app = FastAPI(title=settings.app_name, version="1.1.1")
+app = FastAPI(title=settings.app_name, version="1.2.3")
 
 # 中间件注册顺序：后注册的在外层（先执行）。RequestLogMiddleware 放在最外以捕获所有请求。
 app.add_middleware(RequestLogMiddleware)
@@ -309,6 +309,12 @@ async def enforce_password_change(request, call_next):
                     # [改进/F4] 登出黑名单校验：令已登出/被踢下线的 token 立即失效
                     if is_token_blacklisted(_db, token):
                         return JSONResponse(status_code=403, content={"detail": "未授权访问文件"})
+                    # [修复] 与 get_current_user 口径一致：改密/重置后旧 token 立即失效。
+                    # 原实现缺失该校验，导致改密前签发的 access token 仍可继续下载
+                    # /uploads 下的 PHI 文件（人脸照/工牌照等），直至令牌自然过期。
+                    from app.utils import is_token_stale_after_password_change
+                    if is_token_stale_after_password_change(payload.get("pwd_changed_at"), user.password_changed_at):
+                        return JSONResponse(status_code=401, content={"detail": "密码已修改，请重新登录"})
                     # [修复/问题2] 按文件归属做数据范围校验，防止跨科室越权读取
                     if not _can_access_upload_path(_db, user, rel_path):
                         return JSONResponse(status_code=403, content={"detail": "无权访问该文件"})

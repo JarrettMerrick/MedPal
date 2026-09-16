@@ -15,6 +15,8 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.services import message_service
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import to_iso_utc
 
 router = APIRouter(prefix="/api/notifications", tags=["通知（兼容层）"])
 
@@ -39,7 +41,7 @@ def list_notifications(
                 "related_type": m.related_type,
                 "related_id": m.related_id,
                 "is_read": bool(r.is_read),
-                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "created_at": to_iso_utc(m.created_at),
             }
             for r, m in rows
         ],

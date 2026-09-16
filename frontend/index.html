@@ -2,10 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- [调整 2026-09-16] favicon 改为内联 data URI（品牌色圆角方块 + 医疗十字）：
+         原引用 /vite.svg 为脚手架默认图标且该文件已删除，会 404；内联后无外部图标资源，
+         也不可能夹带第三方标识。与 src/contexts/BrandingContext.tsx 的 DEFAULT_FAVICON 保持一致 -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230E7F8A'/%3E%3Cpath d='M14 6.6h4v7.4h7.4v4H18v7.4h-4V18H6.6v-4H14z' fill='%23ffffff'/%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex, nofollow" />
-    <title>瑞慈医院医护信息管理</title>
+    <title>MedPal信息管理系统</title>
   </head>
   <body>
     <div id="root"></div>

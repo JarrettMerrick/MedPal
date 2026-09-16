@@ -24,7 +24,7 @@
 字段级修改留痕仍由 services/audit_service.record_modification 写入（同时双写 SystemLog）。
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -48,7 +48,9 @@ from app.models.staff import Staff
 from app.models.system_log import SystemLog
 from app.models.user import User
 from app.services.audit_service import get_modification_history
-from app.utils import utc_now
+# [统一时间口径] API 时间字段用 to_iso_utc；导出产物用 to_beijing_str；
+# 日期筛选边界用 beijing_date_start_utc
+from app.utils import utc_now, to_iso_utc, to_beijing_str, beijing_date_start_utc
 
 router = APIRouter(prefix="/api/audit", tags=["系统日志"])
 
@@ -141,9 +143,11 @@ def list_system_logs(
     if keyword:
         query = query.filter(SystemLog.content.contains(keyword))
     if start_date:
-        query = query.filter(SystemLog.timestamp >= datetime.fromisoformat(start_date))
+        # [统一时间口径] 按北京业务日期取 UTC 边界（当日 00:00 北京 = 前一日 16:00 UTC），
+        # 原实现按 UTC 零点解释日期，会使北京 00:00-08:00 的日志漏筛
+        query = query.filter(SystemLog.timestamp >= beijing_date_start_utc(start_date))
     if end_date:
-        query = query.filter(SystemLog.timestamp < datetime.fromisoformat(end_date) + timedelta(days=1))
+        query = query.filter(SystemLog.timestamp < beijing_date_start_utc(end_date, end_of_day=True))
 
     total = query.count()
     items = query.order_by(SystemLog.timestamp.desc()).offset((page - 1) * page_size).limit(page_size).all()
@@ -157,7 +161,8 @@ def list_system_logs(
     return {
         "items": [{
             "id": item.id,
-            "timestamp": item.timestamp.isoformat() if item.timestamp else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "timestamp": to_iso_utc(item.timestamp),
             "level": item.level,
             "level_label": LEVEL_LABELS.get(item.level, item.level),
             "category": item.category,
@@ -197,9 +202,11 @@ def export_system_logs(
     if keyword:
         query = query.filter(SystemLog.content.contains(keyword))
     if start_date:
-        query = query.filter(SystemLog.timestamp >= datetime.fromisoformat(start_date))
+        # [统一时间口径] 按北京业务日期取 UTC 边界（当日 00:00 北京 = 前一日 16:00 UTC），
+        # 原实现按 UTC 零点解释日期，会使北京 00:00-08:00 的日志漏筛
+        query = query.filter(SystemLog.timestamp >= beijing_date_start_utc(start_date))
     if end_date:
-        query = query.filter(SystemLog.timestamp < datetime.fromisoformat(end_date) + timedelta(days=1))
+        query = query.filter(SystemLog.timestamp < beijing_date_start_utc(end_date, end_of_day=True))
 
     items = query.order_by(SystemLog.timestamp.desc()).limit(10000).all()
 
@@ -209,7 +216,8 @@ def export_system_logs(
     ws.append(["时间", "级别", "类别", "操作人", "内容", "IP地址", "详情"])
     for item in items:
         ws.append([
-            item.timestamp.strftime("%Y-%m-%d %H:%M:%S") if item.timestamp else "",
+            # [统一时间口径] 导出产物直接给人看，显式转北京时间
+            to_beijing_str(item.timestamp),
             LEVEL_LABELS.get(item.level, item.level),
             CATEGORY_LABELS.get(item.category, item.category),
             item.operator or "-",
@@ -221,7 +229,8 @@ def export_system_logs(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    filename = f"系统日志_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # [统一时间口径] 文件名时间戳统一用北京时间（原为 datetime.now()，取的是服务器本地时区）
+    filename = f"系统日志_{to_beijing_str(utc_now(), '%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

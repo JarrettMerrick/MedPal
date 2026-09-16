@@ -23,7 +23,8 @@ from app.models.role import Role
 from app.models.staff import Staff
 from app.models.user import User
 from app.services.system_config_service import REGISTRATION_ENABLED_KEY, get_config_value
-from app.utils import hash_password, utc_now
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import hash_password, utc_now, to_iso_utc
 
 logger = logging.getLogger("registration")
 
@@ -267,6 +268,7 @@ def serialize(req: RegistrationRequest) -> dict:
         "status": req.status,
         "reject_reason": req.reject_reason,
         "reviewed_by": req.reviewed_by,
-        "reviewed_at": req.reviewed_at.isoformat() if req.reviewed_at else None,
-        "created_at": req.created_at.isoformat() if req.created_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "reviewed_at": to_iso_utc(req.reviewed_at),
+        "created_at": to_iso_utc(req.created_at),
     }

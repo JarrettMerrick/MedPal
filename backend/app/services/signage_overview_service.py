@@ -11,7 +11,7 @@ from app.services.signage_alert_service import (
     get_abnormal_status, get_inspections_due_soon, get_inspections_overdue,
     get_expiring_validity, get_repairs_in_progress,
 )
-from app.utils import beijing_now, to_beijing_date
+from app.utils import to_iso_utc, to_beijing_date, utc_now
 
 # 标识状态中文标签（与前端 constants/signageStatus.ts 口径一致）
 STATUS_LABELS = {
@@ -108,8 +108,9 @@ def build_overview(db: Session) -> dict:
             "repair_party": r.repair_party, "party_label": REPAIR_PARTY_LABELS.get(r.repair_party, r.repair_party),
             "supplier_name": r.supplier_name, "oa_number": r.oa_number,
             "status": "completed" if r.completed_at else "in_progress",
-            "started_at": str(r.started_at) if r.started_at else None,
-            "completed_at": str(r.completed_at) if r.completed_at else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "started_at": to_iso_utc(r.started_at),
+            "completed_at": to_iso_utc(r.completed_at),
         }
         for r, s in repair_rows
     ]
@@ -126,7 +127,8 @@ def build_overview(db: Session) -> dict:
             "id": i.id, "signage_id": s.id, "code": s.code, "name": s.name,
             "result": i.result, "result_label": STATUS_LABELS.get(i.result, i.result),
             "inspector": i.inspector,
-            "created_at": str(i.created_at) if i.created_at else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "created_at": to_iso_utc(i.created_at),
             "photo": i.photo,
         }
         for i, s in inspection_rows
@@ -155,7 +157,9 @@ def build_overview(db: Session) -> dict:
         "recent_repairs": recent_repairs,
         "recent_inspections": recent_inspections,
         "recent_alerts": recent_alerts,
-        "generated_at": str(beijing_now()),
+        # [统一时间口径] 原为 str(beijing_now())：北京时间串不带时区标记，
+        # 前端按 UTC 解析会多加 8 小时。现统一输出带 Z 的 UTC，由前端转本地。
+        "generated_at": to_iso_utc(utc_now()),
     }
 
 

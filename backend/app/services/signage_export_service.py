@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from openpyxl import Workbook, load_workbook
 from app.config import DATA_ROOT
 from app.models.signage import Signage
-from app.utils import beijing_now, utc_now
+# [统一时间口径] API/清单时间统一 to_iso_utc（带 Z 的 UTC），读取历史串用 parse_iso_utc
+from app.utils import beijing_now, utc_now, to_iso_utc, parse_iso_utc
 from app.services.upload_service import get_file_path, UPLOAD_ROOT
 
 logger = logging.getLogger("hospital")
@@ -218,13 +219,16 @@ def create_export_task(campus=None, building=None, category=None, status=None, s
                        include_design=True, include_photo=True, include_qrcode=True) -> dict:
     """[新增 2026-09-08] 创建导出任务：登记清单（status=processing），打包由后台任务执行"""
     task_id = uuid.uuid4().hex
-    created_at = utc_now().isoformat()
+    created_at = utc_now()
     os.makedirs(_export_task_dir(task_id), exist_ok=True)
     _write_manifest(
         task_id,
         status="processing",
-        created_at=created_at,
-        expires_at=beijing_now().strftime("%Y-%m-%d %H:%M:%S"),
+        # [统一时间口径] 统一带 Z 的 UTC ISO，前端按浏览器时区显示；
+        # 保留至 = 创建时间 + 保留期，与 cleanup_expired_exports 的清理口径一致
+        # （原实现写的是「北京时间格式的当前时刻」，既无时区标记又与清理口径不符）
+        created_at=to_iso_utc(created_at),
+        expires_at=to_iso_utc(created_at + timedelta(hours=EXPORT_RETENTION_HOURS)),
         filters={"campus": campus, "building": building, "category": category,
                  "status": status, "search": search},
         include={"design": include_design, "photo": include_photo, "qrcode": include_qrcode},
@@ -381,8 +385,9 @@ def cleanup_expired_exports() -> int:
         expired = False
         if m and m.get("created_at"):
             try:
-                created = datetime.fromisoformat(m["created_at"])
-                expired = (now - created).total_seconds() > EXPORT_RETENTION_HOURS * 3600
+                # [统一时间口径] 改走 parse_iso_utc：兼容带 Z 的 UTC 串（fromisoformat 直接解析 Z 会抛错）
+                created = parse_iso_utc(m["created_at"])
+                expired = created is not None and (now - created).total_seconds() > EXPORT_RETENTION_HOURS * 3600
             except ValueError:
                 expired = False
         if not expired:
@@ -404,7 +409,7 @@ def cleanup_expired_exports() -> int:
 IMPORT_EXAMPLE = [
     "", "门诊大厅指引牌", "道路指引", "标识标牌", "铝型材", "600x400mm",
     # [新增 2026-09-12] 「区域」列示例留空（选填；仅「楼层导视/宣传」时填写，多个用英文逗号分隔）
-    "南通瑞慈医院", "1号楼", "F1", "", "楼栋导视/宣传", "门诊大厅入口",
+    "MedPal", "1号楼", "F1", "", "楼栋导视/宣传", "门诊大厅入口",
     "门诊大厅", "Outpatient Hall", "正常", "OA20260907001", "某某标识", "13800000000",
     "2026-09-07", "2027-09-07", "long_term", "",
 ]

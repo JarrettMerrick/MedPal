@@ -51,7 +51,8 @@ from app.services.notification_events import (
     MODE_MODIFICATION, MODULE_ORDER, actor_fallback_enabled, get_event,
     keep_actor_enabled, list_events,
 )
-from app.utils import utc_now
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import utc_now, to_iso_utc
 
 logger = logging.getLogger("notification_center")
 
@@ -641,7 +642,8 @@ def build_settings(db: Session) -> dict:
             ],
             "sample": event.get("sample") or {},
             "updated_by": rule.updated_by if rule else None,
-            "updated_at": rule.updated_at.isoformat() if rule and rule.updated_at else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "updated_at": to_iso_utc(rule.updated_at) if rule else None,
         })
     return {
         "events": items,

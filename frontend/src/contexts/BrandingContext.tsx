@@ -15,7 +15,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { getBranding, type BrandingInfo } from '../api/branding';
 
 /** 系统名称未配置时的内置默认值（可在「系统设置」中自定义） */
-export const DEFAULT_SYSTEM_NAME = '瑞慈医院医护信息管理';
+// [品牌统一 2026-09-16] 兜底系统名称，与后端 settings.app_name 默认值保持同口径
+export const DEFAULT_SYSTEM_NAME = 'MedPal信息管理系统';
 /** 单位名称未配置时的展示文案（不再回退到任何内置品牌名） */
 export const NOT_SET_TEXT = '未设置';
 
@@ -47,11 +48,19 @@ const BrandingContext = createContext<BrandingState>(null!);
 
 export const useBranding = () => useContext(BrandingContext);
 
-/** 捕获初始 favicon，重置 Logo 时用于恢复 */
+/**
+ * 默认 favicon（内联 SVG data URI：品牌色圆角方块 + 医疗十字）。
+ * [调整 2026-09-16] 原回退值为 `/vite.svg`（脚手架默认图标，文件已删除，会 404）。
+ * 需与 index.html 中的 <link rel="icon"> 保持一致。
+ */
+const DEFAULT_FAVICON_DATA_URI =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230E7F8A'/%3E%3Cpath d='M14 6.6h4v7.4h7.4v4H18v7.4h-4V18H6.6v-4H14z' fill='%23ffffff'/%3E%3C/svg%3E";
+
+/** 捕获初始 favicon，重置 Logo 时用于恢复（取不到则回退到内联默认图标） */
 const DEFAULT_FAVICON =
   typeof document !== 'undefined'
-    ? document.querySelector('link[rel="icon"]')?.getAttribute('href') || '/vite.svg'
-    : '/vite.svg';
+    ? document.querySelector('link[rel="icon"]')?.getAttribute('href') || DEFAULT_FAVICON_DATA_URI
+    : DEFAULT_FAVICON_DATA_URI;
 
 /** 为 Logo 追加版本参数，双保险规避浏览器缓存（文件名本身已带内容哈希） */
 function withVersion(url: string, updatedAt: string | null): string {

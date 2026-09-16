@@ -11,7 +11,6 @@ from app.models.rate_limit import RateLimitRecord
 from app.models.user import User
 from app.utils import (
     utc_now, decode_token, hash_password, verify_password,
-    generate_reset_password,
 )
 
 MAX_LOGIN_ATTEMPTS = 5
@@ -193,21 +192,23 @@ def get_default_password(db: Session, employee_id: str | None = None) -> str:
     [调整 2026-09-14] 适用场景：后台新建用户 / 批量建号 / 导入人员建号 /
       **一键重置全员密码**（routers/account_settings.py）。
     上述场景一律置 `must_change_password=True`，使用者首次登录即被强制修改。
-    注意：单个用户的「重置密码」（`Rici@` + 工号，见 reset_password）仍走另一套规则，
-    不受本配置影响。
+    注意：单个用户的「重置密码」（reset_password）自 2026-09-16 起同样统一
+    采用本模板渲染，不再使用独立的硬编码规则，保证全场景口令口径一致。
     """
     return render_default_password(get_default_password_template(db), employee_id)
 
 
 def reset_password(db: Session, user: User) -> str:
-    """重置用户密码为随机强口令，并返回该明文口令供管理员转告使用者。
+    """重置用户密码为「账号设置」中配置的默认口令模板渲染结果，并返回该明文口令供管理员转告使用者。
 
-    [修复/问题18] 原实现一律重置为弱口令 `123456`。
-    现改为固定格式「Rici@ + 本人 6 位工号」：可预期、便于转告使用者，
-    并强制首次登录修改。由于该口令可预期，调用方仍须把服务端返回的明文
-    回显给管理员确认（见 users 路由的重置密码接口）。
+    [调整 2026-09-16] 移除独立的硬编码规则「固定前缀 + 工号」，统一采用账户设置
+    中的默认口令模板（如 `MedPal@2026`，支持 `{工号}` 占位符）。这样「重置密码」
+    与「新建账号 / 批量重置」使用同一套规则，保证重置后的口令与账户规则一致。
+    并强制首次登录修改（must_change_password=True）。
+    由于该口令可预期，调用方仍须把服务端返回的明文回显给管理员确认
+    （见 users 路由的重置密码接口）。
     """
-    new_password = generate_reset_password(user.employee_id)
+    new_password = get_default_password(db, user.employee_id)
     user.password_hash = hash_password(new_password)
     user.must_change_password = True
     user.login_attempts = 0

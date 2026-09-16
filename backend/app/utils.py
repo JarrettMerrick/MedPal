@@ -44,6 +44,74 @@ def to_beijing_date(dt: datetime) -> date:
     return (dt + timedelta(hours=8)).date()
 
 
+def beijing_date_start_utc(v, end_of_day: bool = False) -> datetime:
+    """把「北京业务日期」转换为对应 UTC 边界 datetime（日期范围筛选唯一口径）。
+
+    北京 00:00 = 前一日 16:00 UTC；end_of_day=True 时取「次日 00:00（北京）」，
+    配合 `<` 使用即可覆盖 end 当天全天。
+
+    [统一时间口径] 原先多处直接用 datetime.fromisoformat("2026-09-16")（按 UTC 零点解释），
+    导致按北京日期筛选时 00:00-08:00 的记录被漏筛（或边界多筛 8 小时），
+    与界面显示（北京时间）不一致。
+    """
+    if isinstance(v, datetime):
+        d = v.date()
+    elif isinstance(v, date):
+        d = v
+    else:
+        d = datetime.strptime(str(v).strip(), "%Y-%m-%d").date()
+    if end_of_day:
+        d = d + timedelta(days=1)
+    return datetime(d.year, d.month, d.day) - timedelta(hours=8)
+
+
+def to_iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    """将 naive UTC datetime 序列化为带 Z 的 ISO-8601 UTC 字符串（API 输出唯一口径）。
+
+    [统一时间口径] 原先各接口混用 str(dt) / dt.isoformat()，产物都**不含时区标记**
+    （如 "2026-09-16 07:27:03" / "2026-09-16T07:27:03"）。JS 的 new Date() 对无时区
+    标记的字符串按**本地时区**解析，于是 UTC 值被原样显示，比北京时间少 8 小时
+    （如标识维修时间显示 07:27:03 而实际为 15:27:03）。
+    统一输出 "2026-09-16T07:27:03Z" 后，任何标准解析器都会正确地按 UTC 转本地时区。
+    """
+    if dt is None:
+        return None
+    # 兼容误传入的 aware datetime：先折算 UTC 再去掉 tz，保证输出恒为 UTC
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso_utc(v) -> Optional[datetime]:
+    """解析时间字符串为 naive UTC datetime（全项目唯一的反向解析口径）。
+
+    兼容带 Z、带 ±HH:MM 偏移、无时区标记（按 UTC 解释，与存储口径一致）、
+    以及空格分隔（"2026-09-16 07:27:03"）等历史写法。
+    """
+    if not v:
+        return None
+    s = str(v).strip().replace("Z", "+00:00").replace("z", "+00:00")
+    # 兼容空格分隔的日期时间
+    if len(s) > 10 and s[10] == " ":
+        s = s[:10] + "T" + s[11:]
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def to_beijing_str(dt: Optional[datetime], fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """将 naive UTC datetime 格式化为**北京时间**可读字符串。
+
+    适用场景：Excel/CSV 导出、ZIP 内清单、下载文件名、备份清单等**离线产物**。
+    这类内容不经过前端时区转换、直接呈现给人看，因此必须在此显式转成北京时间；
+    API 返回给前端的字段请改用 to_iso_utc，由前端按浏览器时区统一转换。
+    """
+    if dt is None:
+        return ""
+    return (dt + timedelta(hours=8)).strftime(fmt)
+
+
 def get_client_ip(request) -> Optional[str]:
     """从请求中获取真实客户端 IP。
 
@@ -114,22 +182,9 @@ def generate_secure_password(length: int = 12) -> str:
 # [调整 2026-09-10] 新建账号初始口令改为由「账号设置」中的模板生成，
 # 相关常量与逻辑迁移至 app/services/system_config_service.py
 # （DEFAULT_PASSWORD_TEMPLATE_FALLBACK）与 auth_service.get_default_password()。
-
-
-# 「重置密码」场景的临时口令前缀（运维要求：可预期、便于口头/书面转告）
-RESET_PASSWORD_PREFIX = "Rici@"
-
-
-def generate_reset_password(employee_id: str) -> str:
-    """生成「重置密码」场景下的临时口令：固定前缀 `Rici@` + 本人 6 位工号。
-
-    运维要求：重置后的口令需可预期、便于转告使用者
-    （原先的随机强口令包含大小写与符号，难以口头传达）。
-    安全性由以下两点兜底：
-      1) 重置后 `must_change_password=True`，使用者首次登录被强制修改；
-      2) 重置会刷新 `password_changed_at`，此前签发的所有 token 立即失效。
-    """
-    return f"{RESET_PASSWORD_PREFIX}{(employee_id or '').strip()}"
+# [调整 2026-09-16] 「重置密码」场景不再使用独立的硬编码规则（原「固定前缀 + 工号」），
+# 统一改由 auth_service.get_default_password() 渲染账户设置模板，
+# 保证重置密码与账户规则一致，故本文件不再保留重置口令相关常量/函数。
 
 
 def _to_utc_timestamp(dt: datetime) -> float:
@@ -144,6 +199,39 @@ def _to_utc_timestamp(dt: datetime) -> float:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def is_token_stale_after_password_change(
+    token_pwd_changed_at,
+    user_pwd_changed_at: Optional[datetime],
+) -> bool:
+    """判断 token 是否因「密码已被修改/重置」而失效（所有校验点统一口径）。
+
+    [修复] 原实现在 get_current_user / /refresh 各写了一份比对，且存在两个缺陷：
+      1) 漏判：写成 `if 内嵌值 and 用户值`，当 token 未内嵌 pwd_changed_at
+         （签发时该账号还没有改密记录，值为 None）时整体跳过校验 ——
+         此后无论改密还是管理员重置，该 token 都被判为有效，且 /refresh 还会用
+         新的 password_changed_at 重新签发令牌，等于被窃会话可被"洗白"继续使用，
+         使「重置密码找回账号」失效；
+      2) 时区偏移：把存储的 UTC naive 时间当作北京时间再转 UTC（整体 -8 小时），
+         导致"上次改密在 8 小时内"时旧 token 不被失效（8 小时吊销盲区）。
+         现已统一按 UTC 比较，见 _to_utc_timestamp。
+
+    规则：
+      - 用户从未改过密码（user 值为 None）→ 无从比较，不判失效；
+      - 用户有改密记录，但 token 未内嵌改密时间 → 说明签发于首次改密之前 → 失效；
+      - 两者都有 → 内嵌时间早于当前改密时间即失效（留 1 秒容差规避浮点精度误差）。
+    """
+    if not user_pwd_changed_at:
+        return False
+    if token_pwd_changed_at is None:
+        return True
+    try:
+        token_ts = float(token_pwd_changed_at)
+    except (TypeError, ValueError):
+        # 声明值非法（被篡改/格式错误）→ 按失效处理，不放行
+        return True
+    return token_ts < _to_utc_timestamp(user_pwd_changed_at) - 1
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -249,7 +337,12 @@ def verify_file_access_token(token: str) -> bool:
 
 
 def decode_file_access_token(token: str) -> str | None:
-    """从文件访问令牌中解析出工号（用于下载等场景定位用户）"""
+    """从文件访问令牌中解析出工号（用于下载等场景定位用户）。
+
+    必须先在内部校验 HMAC 签名再返回工号，否则攻击者可自行构造
+    `employee_id:exp:任意sig` 的 base64 串冒充任意用户（身份伪造漏洞）。
+    原实现漏校验签名，已在导出包下载接口被直接利用，导致可绕过鉴权下载包。
+    """
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
         parts = raw.split(":")
@@ -257,6 +350,10 @@ def decode_file_access_token(token: str) -> str | None:
             return None
         employee_id, exp, sig = parts
         if _time.time() > int(exp):
+            return None
+        payload = f"{employee_id}:{exp}"
+        expected = hmac.new(settings.secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
             return None
         return employee_id
     except Exception:

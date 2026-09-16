@@ -346,7 +346,7 @@ const SignageExport: React.FC = () => {
                     <span>
                       附件：二维码 {t.counts?.qrcode ?? 0} · 设计文件 {t.counts?.design ?? 0} · 现场照片 {t.counts?.photo ?? 0}
                     </span>
-                    <span>保留至：{t.expires_at || '-'}</span>
+                    <span>保留至：{t.expires_at ? formatDateTimeStandard(t.expires_at) : '-'}</span>
                   </div>
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
                     {(t.parts || []).map((p) => (

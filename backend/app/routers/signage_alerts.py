@@ -188,11 +188,13 @@ def repairs_in_progress(current_user: User = Depends(get_current_user), db: Sess
     if not has_permission(current_user, PERM_SIGNAGE_ALERT):
         raise HTTPException(status_code=403, detail="权限不足")
     rows = get_repairs_in_progress(db)
+    from app.utils import to_iso_utc
     return [{
         "id": r.id, "signage_id": s.id, "code": s.code, "name": s.name,
         "repair_party": r.repair_party, "supplier_name": r.supplier_name,
         "oa_number": r.oa_number,
-        "started_at": str(r.started_at) if r.started_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "started_at": to_iso_utc(r.started_at),
     } for r, s in rows]
 
 

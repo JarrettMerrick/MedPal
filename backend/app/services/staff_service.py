@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.models.staff import Staff
 from app.models.user_department_scope import UserDepartmentScope
 from app.schemas.staff import StaffCreate, StaffUpdate
-from app.utils import utc_now
+# [统一时间口径] 输出给前端的时间字段统一 to_iso_utc（带 Z 的 UTC）
+from app.utils import utc_now, to_iso_utc
 
 # [新增 2026-09-11] 离职保留期（天）：离职满该期限后「仅保留统计」，
 # 由定时任务私信超管提醒手动删除其登录账号（见 backup_service.notify_resigned_accounts）
@@ -141,7 +142,8 @@ def get_resigned_staff_list(
        "in_archive": total_all - archived_count,  # 在档（未满保留期）
        "archived": archived_count,            # 已满保留期（仅计入统计）
        "retention_days": RESIGN_RETENTION_DAYS,
-       "cutoff": cutoff.isoformat(),
+       # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+       "cutoff": to_iso_utc(cutoff),
        "scope": scope,
    }
    return items, total, stats

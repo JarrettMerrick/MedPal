@@ -11,6 +11,8 @@ import {
 import { Link } from 'react-router-dom';
 import { getSuppliers, createSupplier, updateSupplier, deleteSupplier } from '../../api/signage-settings';
 import type { Supplier } from '../../api/signage-settings';
+// [统一时间口径] 时间展示一律走 utils/time（原 updated_at 列未加 render，直接把 UTC 原值显示出来）
+import { formatDateTimeStandard } from '../../utils/time';
 
 const { Title, Text } = Typography;
 const { TabPane } = Tabs;
@@ -92,7 +94,9 @@ const SupplierSettings: React.FC = () => {
       title: '更新时间',
       dataIndex: 'updated_at',
       key: 'updated_at',
-      width: 120,
+      width: 160,
+      // [统一时间口径] 补 render：原实现直接输出后端 UTC 串，比北京时间少 8 小时
+      render: (v: string) => (v ? formatDateTimeStandard(v) : '-'),
     },
     {
       title: '操作',

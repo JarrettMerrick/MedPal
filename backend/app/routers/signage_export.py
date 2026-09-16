@@ -53,7 +53,9 @@ def export_xlsx(
     """[重构 2026-09-07] 导出标识台账 xlsx"""
     _check_view_perm(current_user)
     output = svc.export_signages_xlsx(db, **filters)
-    filename = f"标识台账_{utc_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # [统一时间口径] 下载文件名时间戳统一用北京时间（与维修记录导出等保持一致）
+    from app.utils import beijing_now
+    filename = f"标识台账_{beijing_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     # [新增 2026-09-09] 导出审计留痕
     try:
         client_ip = get_client_ip(request)
@@ -79,7 +81,9 @@ def export_csv(
     """[重构 2026-09-07] 导出标识台账 CSV（utf-8-sig）"""
     _check_view_perm(current_user)
     output = svc.export_signages_csv(db, **filters)
-    filename = f"标识台账_{utc_now().strftime('%Y%m%d_%H%M%S')}.csv"
+    # [统一时间口径] 下载文件名时间戳统一用北京时间（与 xlsx 导出口径一致）
+    from app.utils import beijing_now
+    filename = f"标识台账_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
     # [新增 2026-09-09] 导出审计留痕
     try:
         client_ip = get_client_ip(request)

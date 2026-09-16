@@ -7,7 +7,9 @@ import { Card, Table, Tag, message } from 'antd';
 import { getSignageHistory, getSignage } from '../../api/signage';
 import type { SignageHistory as HistoryType, Signage } from '../../api/signage';
 import { useParams } from 'react-router-dom';
-import dayjs from 'dayjs';
+// [统一时间口径] 时间展示一律走 utils/time（原 dayjs(v).format() 会把无时区标记的
+// UTC 串按浏览器本地时区解释，导致变更时间比北京时间少 8 小时）
+import { formatDateTimeStandard } from '../../utils/time';
 import { SIGNAGE_STATUS_MAP } from '../../constants/signageStatus';
 import { signageFieldLabel, formatSignageFieldValue } from '../../constants/signageFields';
 
@@ -41,7 +43,8 @@ const SignageHistoryPage: React.FC = () => {
     },
     { title: 'OA单号', dataIndex: 'oa_number', key: 'oa_number', width: 120 },
     { title: '变更人', dataIndex: 'changed_by', key: 'changed_by', width: 100 },
-    { title: '变更时间', dataIndex: 'changed_at', key: 'changed_at', width: 180, render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
+    // [统一时间口径] 原 dayjs(v).format() 未做 UTC→本地转换，现统一走 utils/time
+    { title: '变更时间', dataIndex: 'changed_at', key: 'changed_at', width: 180, render: (v: string) => formatDateTimeStandard(v) },
   ];
 
   return (

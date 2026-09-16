@@ -35,7 +35,8 @@ from app.services.system_config_service import (
     update_config,
 )
 from app.services.upload_service import detect_image_format
-from app.utils import utc_now
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import utc_now, to_iso_utc
 
 logger = logging.getLogger("branding")
 
@@ -90,7 +91,8 @@ def _latest_updated_at(db: Session):
         .all()
     )
     latest = max((r.updated_at for r in rows if r.updated_at), default=None)
-    return latest.isoformat() if latest else None
+    # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+    return to_iso_utc(latest)
 
 
 def _probe_logo(content: bytes) -> str:

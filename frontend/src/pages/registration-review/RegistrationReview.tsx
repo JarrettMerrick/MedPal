@@ -27,6 +27,8 @@ import {
   type RegistrationRequestItem,
 } from '../../api/registration';
 import { getErrorMessage } from '../../utils/format';
+// [统一时间口径] 时间展示一律走 utils/time
+import { formatDateTimeStandard } from '../../utils/time';
 import { useAuth } from '../../contexts/AuthContext';
 import { hasPermission, PERM_STAFF_APPROVE, PERM_USER_APPROVE } from '../../utils/permissions';
 import PageContainer from '../../components/PageContainer';
@@ -50,8 +52,10 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   rejected: { color: 'red', label: '已驳回' },
 };
 
+// [统一时间口径] 原 new Date(value).toLocaleString() 会把后端无时区标记的 UTC 串
+// 按浏览器本地时区解释（显示比实际少 8 小时），统一改走 utils/time
 const formatTime = (value: string | null): string =>
-  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--';
+  value ? formatDateTimeStandard(value) : '--';
 
 /** 账号注册审核（原「信息审核」页的表格，逻辑不变） */
 const RegistrationTable: React.FC = () => {

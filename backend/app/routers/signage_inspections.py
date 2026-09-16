@@ -22,7 +22,8 @@ from app.services import signage_service
 from app.services.audit_service import record_audit
 # [新增 2026-09-15] 站内信提醒：巡检提交后通知管理方（此前只留痕不提醒）
 from app.services.modification_notify import notify_super_admins
-from app.utils import utc_now, get_client_ip
+# [统一时间口径] API 时间字段用 to_iso_utc；日期范围边界用 beijing_date_start_utc
+from app.utils import utc_now, get_client_ip, to_iso_utc, beijing_date_start_utc
 
 logger = logging.getLogger(__name__)
 
@@ -216,8 +217,12 @@ def list_inspections(
     """[新增 2026-09-05] 巡检历史查询：支持时间范围、标识编号、巡检人员筛选"""
     if not has_permission(current_user, PERM_SIGNAGE_VIEW):
         raise HTTPException(status_code=403, detail="权限不足")
-    start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
-    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if end_date else None
+    # [统一时间口径] 按北京业务日期换算 UTC 边界（原型直接用 UTC 零点，北京 00:00-08:00 的巡检会漏筛）
+    try:
+        start = beijing_date_start_utc(start_date) if start_date else None
+        end = beijing_date_start_utc(end_date, end_of_day=True) if end_date else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="日期格式应为 YYYY-MM-DD")
     items, total = signage_service.get_inspections(db, page, page_size, code, inspector, start, end)
     out = []
     for r in items:
@@ -233,6 +238,7 @@ def list_inspections(
             "inspector": r.inspector,
             "notes": r.notes,
             "photo": r.photo,
-            "created_at": r.created_at,
+            # [统一时间口径] 带 Z 的 UTC ISO（原样返回 datetime 会被序列化为无时区串，前端易按本地时区误解析）
+            "created_at": to_iso_utc(r.created_at),
         })
     return {"total": total, "items": out, "page": page, "page_size": page_size}

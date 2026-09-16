@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session, joinedload
 from openpyxl import Workbook
 
 from app.models.signage import Signage, SignageRepair
-from app.utils import beijing_now
+# [统一时间口径] API 输出用 to_iso_utc（带 Z 的 UTC，前端按浏览器时区转换显示）；
+# 导出文件用 to_beijing_str（离线产物不经前端转换，直接呈现北京时间）
+from app.utils import to_iso_utc, to_beijing_str
 
 # 维修方中文标签
 REPAIR_PARTY_LABELS = {"vendor": "供应商维修", "engineering": "工程部维修"}
@@ -101,9 +103,10 @@ def _to_item(r: SignageRepair) -> dict:
         "repair_photo_before": r.repair_photo_before,
         "repair_photo": r.repair_photo,
         "started_by": r.started_by,
-        "started_at": str(r.started_at) if r.started_at else None,
+        # [统一时间口径] 带 Z 的 UTC ISO，前端一律经 utils/time.ts 转本地时区显示
+        "started_at": to_iso_utc(r.started_at),
         "completed_by": r.completed_by,
-        "completed_at": str(r.completed_at) if r.completed_at else None,
+        "completed_at": to_iso_utc(r.completed_at),
         "duration_hours": duration_hours,
         "status": "completed" if r.completed_at else "in_progress",
         "status_label": REPAIR_STATUS_LABELS["completed" if r.completed_at else "in_progress"],
@@ -124,15 +127,20 @@ def count_repairs(db: Session, **filters) -> int:
 
 
 def _export_rows(db: Session, **filters) -> list[list]:
-    items = [_to_item(r) for r in _filtered_query(db, **filters).all()]
+    """导出用行数据：时间列统一为**北京时间**可读格式。
+
+    [统一时间口径] 导出的 Excel/CSV 不经过前端时区转换、直接给人看，
+    因此这里不能用接口的 ISO UTC 值（会显示少 8 小时），必须显式转北京时间。
+    """
     rows = []
-    for it in items:
+    for r in _filtered_query(db, **filters).all():
+        it = _to_item(r)
         rows.append([
             it["code"] or "", it["name"] or "", it["category"] or "",
             it["campus"] or "", it["building"] or "", it["floor"] or "",
             it["party_label"], it["supplier_name"] or "", it["oa_number"] or "",
-            it["started_by"] or "", it["started_at"] or "",
-            it["completed_by"] or "", it["completed_at"] or "",
+            it["started_by"] or "", to_beijing_str(r.started_at),
+            it["completed_by"] or "", to_beijing_str(r.completed_at),
             it["duration_hours"] if it["duration_hours"] is not None else "",
             it["status_label"],
             "有" if it["repair_photo_before"] else "无",

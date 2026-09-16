@@ -36,7 +36,9 @@ else:
 class Settings(BaseSettings):
     """应用配置，所有值均可通过环境变量或 .env 文件覆盖"""
 
-    app_name: str = "瑞慈医院医护信息管理"
+    # [品牌统一 2026-09-16] 默认应用名称统一为 MedPal；
+    # 与 .env.example / README 中 APP_NAME 的默认值保持一致
+    app_name: str = "MedPal信息管理系统"
 
     # 数据库 - 默认指向数据根目录下的 data/medical.db（与 backend 完全隔离）
     # Docker 容器中由 docker-compose 的 DATABASE_URL 环境变量覆盖

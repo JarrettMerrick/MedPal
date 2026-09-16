@@ -11,7 +11,7 @@ from app.models.signage import Signage, SignageInspection, SignageRepair
 from app.models.signage_settings import SignageCategory, Supplier
 # [修复 2026-09-08] 预警"今天"统一为北京日期：原 date.today() 取服务器本地时区，
 # 部署在 UTC 时区（如阿里云 Docker 默认）时到期/超期判定会偏移一天
-from app.utils import beijing_today, to_beijing_date, utc_now
+from app.utils import beijing_today, to_beijing_date, utc_now, to_iso_utc
 
 logger = logging.getLogger("hospital")
 
@@ -129,9 +129,10 @@ def get_repairs_by_signage(db, signage_id: int) -> list[dict]:
             "repair_photo_before": r.repair_photo_before,
             "repair_photo": r.repair_photo,
             "started_by": r.started_by,
-            "started_at": str(r.started_at) if r.started_at else None,
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "started_at": to_iso_utc(r.started_at),
             "completed_by": r.completed_by,
-            "completed_at": str(r.completed_at) if r.completed_at else None,
+            "completed_at": to_iso_utc(r.completed_at),
         }
         for r in rows
     ]
@@ -245,7 +246,8 @@ def get_all_alerts(db):
                     "id": r.id, "signage_id": s.id, "code": s.code, "name": s.name,
                     "repair_party": r.repair_party, "supplier_name": r.supplier_name,
                     "oa_number": r.oa_number,
-                    "started_at": str(r.started_at) if r.started_at else None,
+                    # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+                    "started_at": to_iso_utc(r.started_at),
                 } for r, s in repairs[:10]
             ],
             "inspection_due_soon": [

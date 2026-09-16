@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# 依赖目录（极大，构建镜像时会重新安装，必须排除）
+node_modules
+frontend/node_modules
+backend/__pycache__
+backend/**/__pycache__
+**/__pycache__
+*.pyc
+
+# 本地构建产物与缓存
+frontend/dist
+frontend/build
+frontend/.vite
+.vite
+
+# 开发/临时文件
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+
+# 测试
+tests
+__tests__
+*.test.*
+*.spec.*
+
+# 文档（构建无需）
+docs
+*.md
+LICENSE
+
+# 本地环境文件（含密钥，禁止进入镜像）
+.env
+.env.*
+.env.local
+.env.*.local
+
+# 证书与密钥（由宿主机挂载提供）
+*.pem
+*.key
+deploy_aliyun
+
+# 其他部署形态配置（仅保留 aliyun-docker-prod 目录内容）
+deploy/docker-local
+deploy/k8s-prod

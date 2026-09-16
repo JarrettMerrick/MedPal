@@ -39,7 +39,7 @@ interface ChangePwdFormValues {
 }
 
 const ChangePasswordModal: React.FC<Props> = ({ open, onClose, forceMode }) => {
-  const { user } = useAuth();
+  const { user, applyAuthTokens } = useAuth();
   const [form] = Form.useForm<ChangePwdFormValues>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -50,7 +50,12 @@ const ChangePasswordModal: React.FC<Props> = ({ open, onClose, forceMode }) => {
     setError('');
     setLoading(true);
     try {
-      await changePassword(values.oldPassword, values.newPassword);
+      const res = await changePassword(values.oldPassword, values.newPassword);
+      // [修复] 改密后后端已为当前会话重新签发令牌（其余会话因改密时间戳推进而全部失效），
+      // 立即写入内存，避免当前设备在改密成功后立刻 401 / 掉登录。
+      if (res?.access_token) {
+        applyAuthTokens(res.access_token, res.file_token);
+      }
       setSuccess(true);
       form.resetFields();
     } catch (err: unknown) {

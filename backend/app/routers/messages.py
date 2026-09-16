@@ -26,6 +26,8 @@ from app.schemas.message import (
     MessageTagUpdate, RecipientPreviewRequest, SendMessageRequest,
 )
 from app.services import message_service
+# [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
+from app.utils import to_iso_utc
 
 router = APIRouter(prefix="/api/messages", tags=["站内信"])
 
@@ -55,7 +57,7 @@ def _serialize(
         "sender_name": senders.get(m.sender_id) if m.sender_id else None,
         "related_type": m.related_type,
         "related_id": m.related_id,
-        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "created_at": to_iso_utc(m.created_at),
         "is_read": bool(r.is_read) if r else True,
         "is_starred": bool(r.is_starred) if r else False,
         "is_archived": bool(r.is_archived) if r else False,
@@ -126,7 +128,7 @@ def list_sent(
                 "title": m.title,
                 "content": m.content,
                 "msg_type": m.msg_type,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "created_at": to_iso_utc(m.created_at),
                 "recipient_count": totals.get(m.id, 0),
                 "read_count": reads.get(m.id, 0),
             }
@@ -159,7 +161,7 @@ def get_sent_detail(
         "title": m.title,
         "content": m.content,
         "msg_type": m.msg_type,
-        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "created_at": to_iso_utc(m.created_at),
         "recipient_count": len(rows),
         "read_count": sum(1 for r, _u in rows if r.is_read),
         "recipients": [
@@ -168,7 +170,7 @@ def get_sent_detail(
                 "name": u.name if u else None,
                 "department": u.department if u else None,
                 "is_read": bool(r.is_read),
-                "read_at": r.read_at.isoformat() if r.read_at else None,
+                "read_at": to_iso_utc(r.read_at),
             }
             for r, u in rows
         ],

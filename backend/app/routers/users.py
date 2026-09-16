@@ -311,10 +311,10 @@ def reset_user_password(
        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
    if not has_department_access(current_user, user.department or "", db):
        raise HTTPException(status_code=403, detail="无权重置该用户密码")
-   # [修复/问题18 回归] reset_password 现在返回随机生成的强口令明文，
-   # 必须回显给管理员以便转告使用者。原实现丢弃返回值、只回一句
+   # [修复/问题18 回归] reset_password 返回由「账号设置」模板生成（或回退默认）的
+   # 明文口令，必须回显给管理员以便转告使用者。原实现丢弃返回值、只回一句
    # "密码已重置为默认密码"，前端又硬编码提示 123456，
-   # 导致提示的密码与库里实际写入的随机口令不一致，使用者始终无法登录。
+   # 导致提示的密码与库里实际写入的口令不一致，使用者始终无法登录。
    new_password = reset_password(db, user)
    # [修复 2026-09-01] 记录密码重置审计日志
    try:

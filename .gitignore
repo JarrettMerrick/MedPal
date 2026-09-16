@@ -3,6 +3,13 @@
 # 用途：忽略密钥、运行时数据、依赖与构建产物，防止敏感信息入库。
 # 生成背景：审计发现 .env* 配置文件（含生产 SECRET_KEY / 弱口令）处于
 #           "未跟踪且未被忽略"状态，根因为缺失 .gitignore，特此补全。
+#
+# [修复 2026-09-16] 目录/文件类规则一律加前导 "/"（只匹配仓库根目录）：
+#   原写法不带路径前缀（如 `data/`、`manage.py`），会匹配**任意层级**的同名目录/文件，
+#   已实际造成下列源码被静默排除（本机可运行，但新克隆仓库会直接构建失败）：
+#     - frontend/src/pages/data/   ← 被 `data/` 命中（App.tsx 有 import DataManage）
+#     - backend/manage.py          ← 被 `manage.py` 命中（运维 CLI 源码）
+#   因此除"绝不可能是源码"的名字（__pycache__、node_modules 等）外，全部锚定根目录。
 # ============================================================
 
 # ---------- 1. 环境变量 / 密钥（最高优先级，禁止入库） ----------
@@ -11,9 +18,18 @@
 .env.*
 # 脱敏模板 .env.example 允许入库（不包含任何真实密钥）
 !.env.example
+# [新增 2026-09-16] 证书与私钥（部署文档提到服务器根目录放置 www.medpal.ink.pem/.key），
+# 属最高敏感级凭据，任何情况下都不得入库
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
 
 # ---------- 2. 运行时数据目录（由程序自动生成，禁止入库） ----------
-data/
+# [修复 2026-09-16] 必须写成 "/data/"：只忽略**仓库根目录**的运行时数据目录；
+# 原 "data/" 会连源码目录 frontend/src/pages/data/ 一起忽略，导致该页面从未入库。
+/data/
 # SQLite 数据库及其 WAL/SHM 文件
 *.db
 *.db-shm
@@ -23,8 +39,10 @@ data/
 
 # ---------- 3. 日志与临时导出 ----------
 *.log
-logs/
-temp_exports/
+# [修复 2026-09-16] 锚定根目录。日志/临时导出的实际位置在 data/ 下（已由 /data/ 覆盖），
+# 此处保留为兜底，同时避免误伤任意层级名为 logs 的源码目录。
+/logs/
+/temp_exports/
 
 # ---------- 4. Python（后端 FastAPI） ----------
 # [说明 2026-09-11] 本节均为「运行/构建时本地生成」的缓存与中间产物：
@@ -36,26 +54,33 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+# [修复 2026-09-16] 以下构建/打包目录一律锚定仓库根目录：
+# 原写法（如 `lib/`、`build/`、`env/`）会匹配任意层级，可能把
+# frontend/src/lib、src/build 等源码目录静默排除，造成仓库代码不完整。
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-# 虚拟环境
-.venv/
-venv/
-env/
-ENV/
+# 虚拟环境（覆盖「仓库根目录」与「backend/」两种常见位置）
+/.venv/
+/venv/
+/backend/.venv/
+/backend/venv/
+/env/
+/ENV/
+/backend/env/
+/backend/ENV/
 # 测试 / 覆盖率
 .pytest_cache/
 .coverage
@@ -67,6 +92,7 @@ htmlcov/
 .cache/
 
 # ---------- 5. Node / 前端（React + Vite） ----------
+# node_modules 绝不可能包含源码，保持全局匹配（含子目录）
 node_modules/
 frontend/node_modules/
 frontend/dist/
@@ -99,8 +125,14 @@ frontend/coverage/
 Thumbs.db
 desktop.ini
 
-# ---------- 8. 其他 ----------
+# ---------- 9. 其他 ----------
 *.bak
 *.tmp
 *.temp
 ~$*
+# [确认 2026-09-16] deploy/ 为阿里云部署脚本与容器构建配置（Dockerfile.all / nginx /
+# supervisord / docker-compose / setup.sh 等）。按运维要求**不随仓库分发**：其中含服务器
+# 数据路径、域名与证书挂载等生产部署细节，故整目录排除，仅保留在部署机上。
+deploy/
+# [确认 2026-09-16] 该文档为本地开发说明，**有意不入库**（不是误排除，请勿删除本行）
+api接口开发说明.md

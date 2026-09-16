@@ -41,7 +41,8 @@ from app.models.staff_card import StaffCard
 from app.models.export_package import ExportPackage
 from app.models.regulation import Regulation, RegulationCategory, RegulationHistory
 from app.config import settings, DATA_ROOT
-from app.utils import decode_token, utc_now, to_beijing, get_client_ip
+# [统一时间口径] API 时间字段 to_iso_utc（带 Z 的 UTC）；导出产物 to_beijing_str / beijing_now
+from app.utils import decode_token, utc_now, to_beijing, get_client_ip, to_iso_utc, to_beijing_str, beijing_now
 from app.services.audit_service import record_audit, audit_action
 # [新增 2026-09-15] 站内信提醒：数据导入/导出后通知管理方（此前只留痕不提醒）
 from app.services.modification_notify import notify_super_admins
@@ -190,7 +191,8 @@ def _export_to_file(columns, rows, prefix, background_tasks: BackgroundTasks = N
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx", dir=str(TEMP_EXPORT_DIR))
     tmp.write(buf.getvalue())
     tmp.close()
-    filename = f"{prefix}_{utc_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # [统一时间口径] 下载文件名时间戳统一北京时间
+    filename = f"{prefix}_{beijing_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     if background_tasks:
         background_tasks.add_task(_delete_temp_file, tmp.name)
     return FileResponse(
@@ -265,7 +267,8 @@ def export_regulations(
             else:
                 val = getattr(r, field, "")
             if isinstance(val, datetime):
-                val = val.strftime("%Y-%m-%d %H:%M")
+                # [统一时间口径] 导出表内时间统一北京时间（离线产物不经前端转换）
+                val = to_beijing_str(val, "%Y-%m-%d %H:%M")
             row[field] = val
         rows.append(row)
     # [新增 2026-09-15] 补发站内信（事件：data.exported）
@@ -692,7 +695,8 @@ def create_package(
         "department_name": dept_name,
         "photo_types": photo_types_str,
         "status": "packing",
-        "created_at": pkg.created_at.isoformat(),
+        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+        "created_at": to_iso_utc(pkg.created_at),
         "message": "打包任务已创建，请在后台列表中查看进度",
     }
 
@@ -711,8 +715,9 @@ def list_packages(
             "filename": p.filename,
             "file_size": p.file_size,
             "status": p.status,
-            "created_at": p.created_at.strftime("%Y-%m-%d %H:%M:%S") if p.created_at else "",
-            "expires_at": p.expires_at.strftime("%Y-%m-%d %H:%M:%S") if p.expires_at else "",
+            # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
+            "created_at": to_iso_utc(p.created_at),
+            "expires_at": to_iso_utc(p.expires_at),
         }
         for p in pkgs
     ]
