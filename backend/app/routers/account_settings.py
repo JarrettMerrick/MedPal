@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+# Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
 """账号设置汇总接口 + 批量重置密码（全员 / 按科室定向）。

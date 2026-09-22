@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+# Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
 """注册申请服务：登录页自助注册的提交、查询与审核。

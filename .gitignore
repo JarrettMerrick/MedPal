@@ -1,124 +1,108 @@
 # ============================================================
-# MedPal 1.1 —— 项目级 .gitignore
-# 用途：忽略密钥、运行时数据、依赖与构建产物，防止敏感信息入库。
-# 生成背景：审计发现 .env* 配置文件（含生产 SECRET_KEY / 弱口令）处于
-#           "未跟踪且未被忽略"状态，根因为缺失 .gitignore，特此补全。
-#
-# [修复 2026-09-16] 目录/文件类规则一律加前导 "/"（只匹配仓库根目录）：
-#   原写法不带路径前缀（如 `data/`、`manage.py`），会匹配**任意层级**的同名目录/文件，
-#   已实际造成下列源码被静默排除（本机可运行，但新克隆仓库会直接构建失败）：
-#     - frontend/src/pages/data/   ← 被 `data/` 命中（App.tsx 有 import DataManage）
-#     - backend/manage.py          ← 被 `manage.py` 命中（运维 CLI 源码）
-#   因此除"绝不可能是源码"的名字（__pycache__、node_modules 等）外，全部锚定根目录。
+# MedPal 版本库排除清单
+# ------------------------------------------------------------
+# 三条原则：
+#   ① 密钥 / 证书 / 运行数据绝不入库 —— 一旦提交，Git 历史无法彻底清除；
+#   ② 目录类规则尽量锚定根目录（/data/、/logs/），避免误伤同名源码目录
+#      （曾发生 data/ 把 frontend/src/pages/data/ 整个页面静默排除的事故）；
+#   ③ 只有"绝不可能出现在源码里"的名字（node_modules、__pycache__）才全局匹配。
 # ============================================================
 
-# ---------- 1. 环境变量 / 密钥（最高优先级，禁止入库） ----------
-# 覆盖 .env、.env.本地测试、.env.阿里云部署 等所有变体（含中文命名）
+# ---------- 1. 密钥与证书（最高优先级，任何情况不得入库） ----------
 .env
 .env.*
-# 脱敏模板 .env.example 允许入库（不包含任何真实密钥）
+# 脱敏模板允许入库（不含任何真实密钥）
 !.env.example
-# [新增 2026-09-16] 证书与私钥（部署文档提到服务器根目录放置 www.medpal.ink.pem/.key），
-# 属最高敏感级凭据，任何情况下都不得入库
+
+# HTTPS 证书、SSH / PuTTY 私钥：由部署机持有，不随仓库分发
 *.pem
 *.key
 *.crt
+*.cer
+*.der
 *.pfx
 *.p12
+*.ppk
 
-# ---------- 2. 运行时数据目录（由程序自动生成，禁止入库） ----------
-# [修复 2026-09-16] 必须写成 "/data/"：只忽略**仓库根目录**的运行时数据目录；
-# 原 "data/" 会连源码目录 frontend/src/pages/data/ 一起忽略，导致该页面从未入库。
+# ---------- 2. 运行时数据（程序自动生成，禁止入库） ----------
+# 锚定根目录：数据统一存放在 <项目根>/data（容器内为挂载卷 /app/data）
 /data/
-# SQLite 数据库及其 WAL/SHM 文件
-*.db
-*.db-shm
-*.db-wal
-*.sqlite
-*.sqlite3
-
-# ---------- 3. 日志与临时导出 ----------
-*.log
-# [修复 2026-09-16] 锚定根目录。日志/临时导出的实际位置在 data/ 下（已由 /data/ 覆盖），
-# 此处保留为兜底，同时避免误伤任意层级名为 logs 的源码目录。
 /logs/
 /temp_exports/
 
-# ---------- 4. Python（后端 FastAPI） ----------
-# [说明 2026-09-11] 本节均为「运行/构建时本地生成」的缓存与中间产物：
-#   - 删除后不影响系统运行，重新运行程序会自动重新生成；
-#   - 严禁提交入库；若误入库请执行 git rm -r --cached <路径> 后再提交。
-# Python 字节码缓存（pip / uvicorn 运行时自动生成，可随时整目录删除）
+# SQLite 数据库及其 WAL / SHM / 回滚日志
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# 运行与访问日志（按天轮转）
+*.log
+
+# ---------- 3. 生产部署与内部资料（有意不入库，请勿删除本段） ----------
+# 部署脚本、证书挂载路径、域名等生产细节只在部署机上保留，不随仓库分发
+/deploy/
+# 安全审计报告：含尚未修复的问题细节，入库等同于公开攻击线索
+/docs/audit/
+# 本地开发说明文档
+/api接口开发说明.md
+
+# ---------- 4. 本地覆盖配置 ----------
+# Docker Compose 约定的本地覆盖文件（常写本机端口 / 证书路径 / 数据目录）；
+# docker-compose.yml 本身必须入库，故只忽略 override 版本
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# ---------- 5. Python（后端） ----------
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-.Python
-# [修复 2026-09-16] 以下构建/打包目录一律锚定仓库根目录：
-# 原写法（如 `lib/`、`build/`、`env/`）会匹配任意层级，可能把
-# frontend/src/lib、src/build 等源码目录静默排除，造成仓库代码不完整。
-/build/
-/develop-eggs/
-/dist/
-/downloads/
-/eggs/
-/.eggs/
-/lib/
-/lib64/
-/parts/
-/sdist/
-/var/
-/wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+
 # 虚拟环境（覆盖「仓库根目录」与「backend/」两种常见位置）
 /.venv/
 /venv/
-/backend/.venv/
-/backend/venv/
 /env/
 /ENV/
+/backend/.venv/
+/backend/venv/
 /backend/env/
 /backend/ENV/
-# 测试 / 覆盖率
+
+# 构建产物（锚定根目录：避免误伤 src/lib、src/build 一类源码目录）
+/build/
+/dist/
+
+# 测试与静态检查缓存
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
-.tox/
 .mypy_cache/
 .ruff_cache/
 .cache/
 
-# ---------- 5. Node / 前端（React + Vite） ----------
+# ---------- 6. Node / 前端 ----------
 # node_modules 绝不可能包含源码，保持全局匹配（含子目录）
 node_modules/
-frontend/node_modules/
 frontend/dist/
-frontend/build/
 frontend/.vite/
-frontend/coverage/
 *.tsbuildinfo
-.pnp.*
-.yarn/
 
-# ---------- 6. 构建 / 发布产物 ----------
+# ---------- 7. 打包与发布产物 ----------
 *.tar
 *.tar.gz
-*.zip
 *.tgz
-# [新增 2026-09-19] 界面截图回归产物（frontend/scripts/screenshot-regression.mjs 的输出目录）
-# 属可再生产物，不纳入版本管理
-.screenshots/
+*.zip
 *.whl
-*.rpm
-*.deb
+# 界面截图回归产物（frontend/scripts/screenshot-regression.mjs 的输出目录）
+.screenshots/
 
-# ---------- 7. 本地 IDE / 工具数据（含 CodeBuddy 项目数据，非源码） ----------
+# ---------- 8. 编辑器 / IDE / 工具数据 ----------
+# CodeBuddy 项目数据（非源码）
 .codebuddy/
-
-# ---------- 8. 编辑器 / IDE / 操作系统 ----------
 .vscode/
 .idea/
 *.swp
@@ -128,22 +112,8 @@ frontend/coverage/
 Thumbs.db
 desktop.ini
 
-# ---------- 9. 其他 ----------
+# ---------- 9. 其他临时文件 ----------
 *.bak
 *.tmp
 *.temp
 ~$*
-# [确认 2026-09-16] deploy/ 为阿里云部署脚本与容器构建配置（Dockerfile.all / nginx /
-# supervisord / docker-compose / setup.sh 等）。按运维要求**不随仓库分发**：其中含服务器
-# 数据路径、域名与证书挂载等生产部署细节，故整目录排除，仅保留在部署机上。
-deploy/
-# [确认 2026-09-16] 该文档为本地开发说明，**有意不入库**（不是误排除，请勿删除本行）
-api接口开发说明.md
-
-# [确认 2026-09-21] 审计报告**有意不入库**（不是误排除，请勿删除本行）
-#   原因：报告内容包含**尚未修复**的安全问题细节 —— 例如令牌类型未区分、
-#   上传文件归属校验可被派生文件名绕过、分片上传的任意目录删除构造方式等。
-#   这类信息一旦随仓库分发或推送到远端，等同于公开攻击线索（CWE-200 类问题）。
-#   报告本身对修复很有价值，**保留在本地**供参考即可。
-#   如确需入库，请先确认报告中所列问题已全部修复、或对细节做脱敏处理。
-/docs/audit/
