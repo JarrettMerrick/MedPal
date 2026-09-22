@@ -2,6 +2,8 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 import api, { uploadApi } from './client';
+// [修正 2026-09-22] 统一的 Blob 下载（替代本文件原先自带的同名实现）
+import { downloadBlob } from '../utils/fileUtils';
 
 // ==================== 导出 ====================
 
@@ -201,15 +203,9 @@ export const downloadPackage = async (packageId: number, filename: string) => {
   const res = await api.get(`/data/export/packages/${packageId}/download`, {
     responseType: 'blob',
   });
-  const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
-  const anchor = document.createElement('a');
-  anchor.href = blobUrl;
-  anchor.download = filename || `package_${packageId}.zip`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  // 及时释放 Blob，避免内存泄漏
-  window.URL.revokeObjectURL(blobUrl);
+  // [修正 2026-09-22] 改用公共 downloadBlob（原实现写法本身正确，
+  // 统一后全项目只有一处 Blob 下载实现，避免再出现"某一份漏了 appendChild"的情况）
+  downloadBlob(res.data as Blob, filename || `package_${packageId}.zip`);
 };
 
 /** 删除打包记录及文件 */
@@ -228,13 +224,6 @@ export interface PackageItem {
 
 // ==================== 工具函数 ====================
 
-function downloadBlob(blob: Blob, defaultName: string) {
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = defaultName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
-}
+// [修正 2026-09-22] 原先此处有一份本地 downloadBlob 实现（与 utils/fileUtils 的同名）。
+// 全项目曾有三份写法互不相同的 Blob 下载代码，其中一份因缺少 appendChild 在
+// Firefox 下完全无法下载（见 api/audit.ts 的历史问题）。现统一为从公共工具导入。

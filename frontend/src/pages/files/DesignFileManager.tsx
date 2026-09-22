@@ -41,7 +41,7 @@ import {
 import type {
   DesignFileItem, DesignFileListParams, DesignFileSummary, FileCategoryItem, FileTag,
 } from '../../api/designFiles';
-import { downloadDesignFile, fileExtLabel, formatFileSize } from '../../utils/fileUtils';
+import { downloadBlob, downloadDesignFile, fileExtLabel, formatFileSize } from '../../utils/fileUtils';
 import { formatDateTimeStandard } from '../../utils/time';
 import PageContainer from '../../components/PageContainer';
 import PageHeader from '../../components/PageHeader';
@@ -294,14 +294,8 @@ const DesignFileManager: React.FC = () => {
     setZipping(true);
     try {
       const result = await downloadFilesZip(ids);
-      const url = URL.createObjectURL(result.blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = result.filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      // [修正 2026-09-22] 改用公共 downloadBlob（原实现写法本身正确，统一避免再有"某一份漏了步骤"）
+      downloadBlob(result.blob, result.filename);
       if (result.skipped > 0) {
         message.warning(
           `已打包 ${result.packed} 个文件；${result.skipped} 个文件在服务器上缺失，已跳过`,

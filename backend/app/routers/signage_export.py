@@ -231,6 +231,33 @@ def download_attachment_part(task_id: str, filename: str, current_user: User = D
     return FileResponse(path, media_type="application/zip", filename=filename)
 
 
+@router.delete("/attachments/{task_id}")
+def delete_attachment_task(task_id: str, current_user: User = Depends(get_current_user)):
+    """手动删除指定的附件导出任务（连同已生成的压缩包）。
+
+    [新增 2026-09-22] 此前导出包只能等 24 小时保留期自动清理。用户若在生成后
+    立刻发现筛选条件选错（导出包体积不小、含二维码与附件），只能干等一天。
+
+    安全设计（与 status / download 两个只读接口保持一致的口径）：
+      - 权限：复用 _check_view_perm，与查看导出任务的权限一致
+        （能看就能删自己的，不额外抬高门槛）；
+      - 归属：不可见的任务一律按 **404「不存在」** 处理，而不是 403 ——
+        避免通过状态码差异试探出"某个 task_id 是否存在"；
+      - 越权与路径安全由服务层 delete_export_task 兜底断言。
+    """
+    _check_view_perm(current_user)
+    m = svc.get_export_task(task_id)
+    if not m or not _task_visible(m, current_user):
+        raise HTTPException(status_code=404, detail="导出任务不存在或已过期")
+
+    # 与 list_attachments_tasks 同口径：不限科室范围的角色（scope=all）可删任意任务
+    owner = None if _get_role_dept_scope(current_user) == "all" else current_user.employee_id
+    ok, message = svc.delete_export_task(task_id, owner=owner)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"message": message}
+
+
 @router.get("/import-template")
 def download_import_template(current_user: User = Depends(get_current_user)):
     """[新增 2026-09-07] 下载标识导入模板（含填写说明页）。

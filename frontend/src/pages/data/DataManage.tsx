@@ -193,8 +193,12 @@ const DataManage: React.FC = () => {
         end_date: sysLogEndDate || undefined,
       });
       show('success', '导出完成');
-    } catch (e: any) {
-      show('error', e?.response?.data?.detail || '导出失败');
+    } catch (e) {
+      // [修正 2026-09-22] 原来只从 axios 错误对象里取 detail。但导出函数现在会
+      // 把"后端返回的错误 JSON"解析成一个普通 Error 抛出（见 ensureBlobIsFile）——
+      // 那种情况下 e.response 不存在，提示会退化成笼统的「导出失败」，用户仍不知原因。
+      // 改用统一的 getErrorMessage：它同时能处理 axios 错误与普通 Error。
+      show('error', getErrorMessage(e, '导出失败'));
     }
   };
 

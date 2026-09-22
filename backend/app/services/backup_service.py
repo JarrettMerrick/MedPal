@@ -13,6 +13,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import create_engine, text
 
 from app.config import settings, DATA_ROOT
+# [新增 2026-09-22] 恢复备份后对齐库结构（备份可能来自旧版本，缺表/缺列）
+from app.services.schema_sync import sync_schema
 
 logger = logging.getLogger("backup_service")
 
@@ -81,6 +83,48 @@ def _resolve_backup_path(filename: str) -> Path:
 def _get_db_path() -> Path:
     db_path = settings.database_url.replace("sqlite:///", "")
     return Path(db_path)
+
+
+def _restore_baseline_data() -> None:
+    """恢复备份后补齐基础业务数据（角色权限、系统配置）。幂等，可重复调用。
+
+    [新增 2026-09-22] 与 sync_schema 的关系：前者对齐**结构**（建表/补列），
+    本函数补齐**数据**（权限点、role_id 关联、配置项）。二者缺一不可 ——
+    只对齐结构时，恢复旧备份后会出现「登录成功但到处提示缺少权限」：
+    权限表里只有当年的权限点，且旧数据的 users.role_id 为空。
+
+    每一步都用独立 try 包裹，任一步失败只记 WARNING，不影响其余步骤，
+    也绝不因此让一次已经成功的恢复被回滚。
+    """
+    from app.database import SessionLocal
+
+    # ① 角色 / 权限点 / role_id 回填
+    try:
+        from app.services.role_initializer import init_default_roles
+
+        db = SessionLocal()
+        try:
+            init_default_roles(db)
+            db.commit()
+            logger.info("恢复后处理：角色与权限初始化完成")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("恢复后处理：角色与权限初始化失败（非致命）: %s", e, exc_info=True)
+
+    # ② 系统配置（口令模板、功能开关等默认值）
+    try:
+        from app.services.system_config_service import init_default_configs
+
+        db = SessionLocal()
+        try:
+            init_default_configs(db)
+            db.commit()
+            logger.info("恢复后处理：系统配置初始化完成")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("恢复后处理：系统配置初始化失败（非致命）: %s", e, exc_info=True)
 
 
 def _verify_sqlite_integrity(path: Path) -> tuple[bool, str]:
@@ -555,6 +599,64 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
                 sess.close()
         except Exception as audit_err:
             logger.warning(f"恢复审计留痕失败（非致命）: {audit_err}", exc_info=True)
+
+        # ── [新增 2026-09-22] 恢复后把库结构对齐到当前版本 ──
+        #
+        # 起因是一次真实故障：恢复了一份旧版本备份（只有 24 张表，当前需要 50 张），
+        # 而建表与自动补列**只在应用启动时执行** —— 恢复后未重启，登录时查询
+        # `rate_limit_records` 直接 `no such table`，表现为「500 服务器内部错误、
+        # 应用无法登录」，但数据其实完好无损，纯粹是结构没对齐。
+        #
+        # 这里主动对齐，使恢复流程**自洽**：无论备份来自哪个版本，
+        # 恢复完成即是可用状态，不必依赖使用者"记得重启应用"。
+        # sync_schema 是纯增量操作（只建缺失的表、只加缺失的列），幂等且不动存量数据；
+        # 它内部所有异常都被吞掉并记日志，绝不会因为补列失败而让一次成功的恢复回滚。
+        schema_stats = sync_schema()
+        if schema_stats.get("tables_created") or schema_stats.get("columns_added"):
+            logger.warning(
+                f"恢复的备份来自较旧版本，已自动对齐库结构: "
+                f"新建表 {len(schema_stats.get('tables_created', []))} 张, "
+                f"补列 {len(schema_stats.get('columns_added', []))} 个"
+                + (
+                    f"; 有 {len(schema_stats.get('columns_skipped', []))} 列需人工处理"
+                    if schema_stats.get("columns_skipped") else ""
+                )
+            )
+
+        # ── [新增 2026-09-22] 释放连接池，让后续连接能看到刚新建的表 ──
+        #
+        # 为什么要单独做这一步：SQLite 会**缓存 schema**。恢复流程中
+        # sync_schema() 新建的表（如 system_logs），对**恢复之前就已打开**的连接
+        # 是不可见的 —— 那些连接手里仍是旧 schema，查询新表会报
+        # `no such table: system_logs`，进而导致事务回滚、连带抛出
+        # PendingRollbackError。
+        #
+        # 实测表现：恢复本身成功，但紧随其后的「恢复审计留痕」必然失败
+        # （日志中的 no such table: system_logs → PendingRollbackError 组合）。
+        # 虽然被 catch 成 WARNING 不影响恢复，但「数据库恢复」属于必须留痕的
+        # 关键操作 —— 审计链上缺这一条，事后追责时无法证明"谁在何时恢复过数据"。
+        #
+        # dispose() 会关闭池内所有连接（含残留的旧 schema 连接），
+        # 后续新建的连接自然带上最新 schema。
+        try:
+            import app.database as _db_mod
+            _db_mod.engine.dispose()
+        except Exception as dispose_err:
+            logger.warning("恢复后释放连接池失败（非致命）: %s", dispose_err, exc_info=True)
+
+        # ── [新增 2026-09-22] 恢复后补齐基础业务数据 ──
+        #
+        # sync_schema 只对齐**结构**，不填充**数据**。恢复旧备份后还会缺：
+        #   · permissions 只有当年的权限点 → 新模块的入口/接口全部 403
+        #   · users.role_id 为空（旧表没有该列）→ 账号查不到角色，权限判定为空集
+        #   · system_configs 缺少新增的配置项 → 相关功能取不到默认值
+        # 这三项的初始化原本只在**应用启动**时执行，于是恢复后必须重启才行。
+        # 现象「登录后提示缺少权限」与原因「role_id 为空」之间毫无提示关系，
+        # 排查成本极高 —— 索性在恢复流程内一并完成。
+        #
+        # 安全性：这些初始化函数都是**幂等**的（只补充缺失项，不删除、不覆盖已有配置），
+        # 且每一步都有独立的 try 包裹（一个失败不影响其余），不会让一次成功的恢复回滚。
+        _restore_baseline_data()
 
         # 保留预恢复备份文件（prerestore_*.db），作为恢复失败/发现问题时的回滚点
         # [修正 2026-09-19] 原为连续两条「数据库恢复成功」（内容重叠且无信息增量），

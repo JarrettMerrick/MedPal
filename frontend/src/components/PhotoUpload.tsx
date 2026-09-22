@@ -1,4 +1,5 @@
 import React, { useRef, useState, useMemo, useEffect, useCallback } from 'react';
+import { downloadBlob } from '../utils/fileUtils';
 import { Modal, Button, Progress, Alert, Typography, Image, Space, Tag, theme } from 'antd';
 import { InboxOutlined, DownloadOutlined, EyeOutlined, SwapOutlined, DeleteOutlined } from '@ant-design/icons';
 import { uploadApi } from '../api/client';
@@ -602,11 +603,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
       // [改进] 下载扩展名以真实内容为准（原图可能是 PNG/WebP，而非正式图的 .jpg）
       const mimeExt: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
       const downloadExt = mimeExt[blob.type] || realExt;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${baseName}${downloadExt}`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      // [修正 2026-09-22] 改用公共 downloadBlob：原实现缺 appendChild
+      // （Firefox 下 click() 不触发下载），且 revoke 紧跟 click 之后。
+      downloadBlob(blob, `${baseName}${downloadExt}`);
     } catch { /* ignore */ }
   };
 

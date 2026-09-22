@@ -555,6 +555,40 @@ from app.database import SessionLocal as _AuditSessionLocal
 from app.models.system_log import SystemLog as _SystemLog
 
 
+# [新增 2026-09-22] 识别"库结构与代码不匹配"类错误所用的模式。
+# SQLAlchemy 的 OperationalError 会把底层 sqlite3 的原始信息保留在字符串里，
+# 因此可以直接匹配（不依赖异常类型，因为包装层级可能随版本变化）。
+_SCHEMA_ERROR_PATTERNS = (
+    (re.compile(r"no such table:\s*([\w.]+)"), "数据表"),
+    (re.compile(r"no such column:\s*([\w.]+)"), "数据字段"),
+)
+
+
+def _diagnose_schema_error(exc: Exception) -> str | None:
+    """识别结构类错误，返回可照做的中文指引；不属于此类则返回 None。
+
+    为什么要单独处理这一类：它的**现象**（500 服务器内部错误）与**解法**
+    （重启应用自动补齐结构）之间没有任何提示关系，使用者只能靠经验或逐层翻日志
+    才能从前者推到后者。这类"有明确解法却不告知"的错误，排查成本远高于它的
+    实际复杂度，值得为它单独写一条文案。
+
+    典型触发场景：恢复了一份较旧版本的备份（那次是 24 张表 vs 当前 50 张），
+    而应用未重启，于是查询新表时直接报 no such table。
+    """
+    msg = str(exc)
+    for pattern, kind in _SCHEMA_ERROR_PATTERNS:
+        match = pattern.search(msg)
+        if match:
+            missing = match.group(1)
+            return (
+                f"数据库结构不完整（缺少{kind} {missing}）。"
+                "常见原因是恢复了一份较早版本的备份，且应用未重启以升级表结构。"
+                "请重启应用（启动时会自动补齐缺失的表与字段）后重试；"
+                "若重启后仍出现该提示，请将本提示与本时间点的系统日志一并反馈给管理员。"
+            )
+    return None
+
+
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, HTTPException):
@@ -593,6 +627,19 @@ async def _global_exception_handler(request: Request, exc: Exception):
                     "旁路操作失败（已忽略，不影响主流程）", exc_info=True
                 )
     from fastapi.responses import JSONResponse
+
+    # ── [新增 2026-09-22] 结构类错误给出可照做的提示 ──
+    # 起因：恢复旧版本备份后，库里缺少 RateLimitRecord 等表，登录时抛
+    # `OperationalError: no such table: rate_limit_records`，被这里统一包装成
+    # 「服务器内部错误」。用户看到的是"应用损坏了"，管理员在日志里也要翻一阵
+    # 才能定位到根因 —— 而根因其实有**明确且简单的解法**（重启以升级结构）。
+    #
+    # 这类"有解法但不告诉使用者"的错误是排查成本最高的，因此单独识别并给出指引。
+    # 注意状态码仍保持 500（前端已有统一的错误处理路径），只把 detail 换成可操作的文案。
+    _guidance = _diagnose_schema_error(exc)
+    if _guidance:
+        return JSONResponse(status_code=500, content={"detail": _guidance})
+
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 

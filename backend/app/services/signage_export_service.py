@@ -451,6 +451,57 @@ def cleanup_expired_exports() -> int:
     return removed
 
 
+def delete_export_task(task_id: str, owner: str | None = None) -> tuple[bool, str]:
+    """手动删除一个导出任务（含其压缩包目录）。返回 (是否成功, 说明)。
+
+    [新增 2026-09-22] 此前导出包只能等待 24 小时保留期后由
+    cleanup_expired_exports 自动清理，用户无法提前删除 —— 而导出包往往体积不小
+    （含二维码与附件），生成后立刻发现选错条件时只能干等一天。
+
+    安全要点（三项都必要）：
+      ① **路径越界断言** —— task_id 来自 URL，必须确认拼出的目录仍在 EXPORT_ROOT 内，
+         否则构造 `../../` 就能删掉任意目录（与审计 S-5 同类风险）；
+      ② **归属校验** —— 非超管只能删自己创建的导出任务，否则任何登录用户都能
+         枚举并删除他人的导出产物（list_export_tasks 早就做了 owner 过滤，
+         删除作为破坏性操作更必须校验）；
+      ③ **拒绝删除根目录本身** —— 防止 task_id 为空或异常值时把整个导出根删掉。
+    """
+    if not task_id:
+        return False, "任务不存在"
+
+    task_dir = _export_task_dir(task_id)
+    real_root = os.path.realpath(EXPORT_ROOT)
+    real_dir = os.path.realpath(task_dir)
+
+    # ① + ③：路径必须严格位于导出根目录之下（real_dir == real_root 时说明是根目录本身）
+    if real_dir == real_root or not real_dir.startswith(real_root + os.sep):
+        logger.warning("拒绝删除越界的导出任务路径: task_id=%s", task_id)
+        return False, "任务不存在"
+
+    if not os.path.isdir(real_dir):
+        return False, "任务不存在或已被清理"
+
+    # ② 归属校验：owner 为 None 表示调用方为超管（不做限制）
+    if owner is not None:
+        manifest = _read_manifest(task_id)
+        if manifest and manifest.get("owner") != owner:
+            logger.warning(
+                "越权删除导出任务被拒绝: task_id=%s, owner=%s, 请求者=%s",
+                task_id, manifest.get("owner"), owner,
+            )
+            return False, "无权删除他人的导出任务"
+
+    try:
+        # ignore_errors=False：删除失败要能感知并回报（与自动清理的静默忽略不同，
+        # 手动删除是用户主动发起的操作，失败必须明确告知，否则用户以为删掉了）
+        shutil.rmtree(real_dir, ignore_errors=False)
+        logger.info("已手动删除导出任务: task_id=%s, 操作者=%s", task_id, owner or "super_admin")
+        return True, "已删除"
+    except OSError as e:
+        logger.warning("手动删除导出任务失败: task_id=%s", task_id, exc_info=True)
+        return False, f"删除失败: {e}"
+
+
 # ==================== 导入 ====================
 
 IMPORT_EXAMPLE = [

@@ -2,6 +2,9 @@
 // 查看全部标识的全部维修记录，支持关键词/日期范围/维修部门/供应商/状态筛选；
 // 导出前弹窗确认筛选范围（条数），可导出 Excel / CSV；维修前后照片缩略图可点击放大对比
 import React, { useCallback, useEffect, useState } from 'react';
+// 别名导入：本文件另有一个同名的业务函数（带鉴权发起请求后下载），
+// 公共工具冲突，故用别名引用（见下方 downloadBlob 的说明）。
+import { downloadBlob as downloadBlobCore } from '../../utils/fileUtils';
 import { Card, Table, Button, Input, Select, DatePicker, Space, Tag, Modal, message, Image, Spin } from 'antd';
 // [新增 2026-09-14] 标识编码跳转标识详情
 import { Link } from 'react-router-dom';
@@ -19,17 +22,23 @@ import { formatDateTimeStandard } from '../../utils/time';
 
 const { RangePicker } = DatePicker;
 
-/** 带鉴权下载二进制流（导出接口返回文件流） */
+/**
+ * 带鉴权下载二进制流（导出接口返回文件流）。
+ *
+ * [修正 2026-09-22] 原先此处又写了一份自己的 Blob 下载实现 —— 全项目共有三份
+ * （另两份在 utils/fileUtils 与 api/data）。三份写法**并不完全一致**，这正是
+ * `api/audit.ts` 那份"少了一行 appendChild 导致 Firefox 下点了没反应"的成因。
+ *
+ * 现在只保留本函数的**业务部分**（携带 Bearer 令牌发起请求），
+ * 把"生成并触发下载"这一步交给公共工具 downloadBlob —— 该工具的注释里写明了
+ * 必须挂载到 DOM、以及 revoke 必须放在 click 之后的原因。
+ *
+ * 说明：本函数名保持不变（它描述的是"带鉴权的下载"这一业务动作，与公共工具
+ * 的纯"触发下载"职责不同），因此无需改动任何调用点；公共工具以别名导入以免重名。
+ */
 async function downloadBlob(url: string, filename: string): Promise<void> {
   const response = await api.get(url.replace(/^\/api/, ''), { responseType: 'blob' });
-  const blob = response.data as Blob;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(a.href);
+  downloadBlobCore(response.data as Blob, filename);
 }
 
 // [修复 2026-09-19] 接入维修操作按钮。

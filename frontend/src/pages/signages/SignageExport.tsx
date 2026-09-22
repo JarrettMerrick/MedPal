@@ -3,13 +3,18 @@
 // ② 附件批量导出：两步式——先生成后台打包任务（单卷≤500MB 自动分卷），再按分卷下载；压缩包保留 24 小时；
 // ③ 数据导入：下载 xlsx 模板 → 上传模板文件批量导入，展示成功/跳过/逐行错误明细。
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { downloadBlob as downloadBlobCore } from '../../utils/fileUtils';
 // [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
   App, Card, Button, Select, Input, Space, Checkbox, Upload, Alert, Divider, Typography, Spin,
+  // [新增 2026-09-22] Popconfirm：删除导出任务前的二次确认
+  Popconfirm,
 } from 'antd';
 import {
   DownloadOutlined, FileExcelOutlined, FileTextOutlined, FolderOpenOutlined,
   UploadOutlined, FileAddOutlined,
+  // [新增 2026-09-22] 删除按钮图标
+  DeleteOutlined,
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import { campusApi } from '../../api/campus';
@@ -45,12 +50,11 @@ async function downloadBlob(url: string, filename: string): Promise<void> {
     } catch { /* 解析失败用默认提示 */ }
     throw new Error(detail);
   }
-  const blob = response.data as Blob;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  // [修正 2026-09-22] 改用公共 downloadBlob：原实现缺 appendChild，
+  // 在 Firefox 下 click() 不会触发下载（表现为"点了没反应"），
+  // 且 revoke 紧跟在 click 之后，大文件时可能尚未开始下载就失去数据源。
+  // 本文件上方有一个同名的业务函数（带鉴权发起请求），故用别名引用公共工具
+  downloadBlobCore(response.data as Blob, filename);
 }
 
 const SignageExport: React.FC = () => {
@@ -200,8 +204,24 @@ const SignageExport: React.FC = () => {
         `/api/signage-export/attachments/download/${encodeURIComponent(taskId)}/${encodeURIComponent(filename)}`,
         filename,
       );
-    } catch (e: any) {
+    } catch (e) {
       message.error(getErrorMessage(e, '下载失败'));
+    }
+  };
+
+  /**
+   * [新增 2026-09-22] 手动删除导出任务（连同已生成的压缩包）。
+   *
+   * 此前导出包只能等 24 小时保留期自动清理；若生成后立刻发现筛选条件选错，
+   * 体积不小的压缩包会在磁盘上白占一天，用户也无法主动回收。
+   */
+  const handleDeleteTask = async (taskId: string) => {
+    try {
+      await api.delete(`/signage-export/attachments/${encodeURIComponent(taskId)}`);
+      message.success('已删除该导出任务');
+      loadTasks();
+    } catch (e) {
+      message.error(getErrorMessage(e, '删除失败'));
     }
   };
 
@@ -344,13 +364,33 @@ const SignageExport: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {doneTasks.map((t) => (
                 <div key={t.task_id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, padding: 12 }}>
-                  <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: 'var(--text-2)' }}>
+                  <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: 'var(--text-2)', alignItems: 'center' }}>
                     <span>生成时间：{formatDateTimeStandard(t.created_at)}</span>
                     <span>标识数：{t.total ?? '-'}</span>
                     <span>
                       附件：二维码 {t.counts?.qrcode ?? 0} · 设计文件 {t.counts?.design ?? 0} · 现场照片 {t.counts?.photo ?? 0}
                     </span>
                     <span>保留至：{t.expires_at ? formatDateTimeStandard(t.expires_at) : '-'}</span>
+                    {/* [新增 2026-09-22] 手动删除：此前只能等 24 小时到期自动清理，
+                        生成后立刻发现选错条件时，压缩包要在磁盘上白占一天。
+                        用 Popconfirm 二次确认 —— 删除会连同压缩包一起移除且不可恢复。 */}
+                    <Popconfirm
+                      title="删除该导出任务？"
+                      description="将同时删除已生成的压缩包，操作不可恢复。"
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => handleDeleteTask(t.task_id)}
+                    >
+                      <Button
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        style={{ marginLeft: 'auto' }}
+                      >
+                        删除
+                      </Button>
+                    </Popconfirm>
                   </div>
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
                     {(t.parts || []).map((p) => (

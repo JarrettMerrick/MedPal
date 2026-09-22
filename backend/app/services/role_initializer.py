@@ -11,6 +11,56 @@ from app.models.role import Role, Permission
 logger = logging.getLogger("role_initializer")
 
 
+def _backfill_user_role_ids(db: Session) -> int:
+    """回填 users.role_id：把「role 字符串有效、但 role_id 为空」的账号关联到角色。
+
+    [新增 2026-09-22] 补齐一处逻辑缺口。
+
+    背景：用户表早期只存 `role` 字符串（如 'employee'），后来引入 `role_id`
+    外键。`_validate_all_user_roles` 会在**角色名需要修正时**顺带写入 role_id：
+
+        u.role = corrected
+        if correct_role:
+            u.role_id = correct_role.id      # ← 仅此一处
+
+    但**角色名本身有效、只是 role_id 为空**的情况不在它的覆盖范围内 —— 于是这些
+    账号查不到任何角色，权限判定返回空集，表现为「登录后到处提示缺少权限」。
+
+    该情况在**恢复旧版本备份**后必然出现（旧库天然没有 role_id），且症状
+    （"缺少权限"）与原因（"外键为空"）之间没有提示关系，排查成本很高。
+
+    本函数补上这半边：以 role 字符串为准回填 role_id。幂等，可重复执行。
+
+    返回：回填的账号数。
+    """
+    from app.models.user import User
+
+    role_id_by_name = {r.name: r.id for r in db.query(Role).all()}
+    if not role_id_by_name:
+        return 0
+
+    pending = (
+        db.query(User)
+        .filter(User.role_id.is_(None), User.role.isnot(None))
+        .all()
+    )
+    filled = 0
+    for user in pending:
+        role_id = role_id_by_name.get(user.role)
+        if role_id is not None:
+            user.role_id = role_id
+            filled += 1
+
+    if filled:
+        db.flush()
+        # 与「发现孤立角色名」同级：均属启动时发现的脏数据自愈，值得留痕但不构成故障
+        logger.warning(
+            "已回填 %d 个账号的角色关联（role_id 为空，按 role 字符串匹配）",
+            filled,
+        )
+    return filled
+
+
 def init_default_roles(db: Session):
     """初始化默认角色和权限
     
@@ -24,6 +74,8 @@ def init_default_roles(db: Session):
         _add_new_permissions(db)
         # [改进] 每次启动都校验用户角色完整性
         _validate_all_user_roles(db)
+        # [新增 2026-09-22] 回填 role_id 为空但 role 字符串有效的账号
+        _backfill_user_role_ids(db)
         # [改进] 同步有效角色名到 ORM 层校验器
         sync_valid_role_names(db)
         return

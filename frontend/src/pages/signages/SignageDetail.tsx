@@ -425,10 +425,16 @@ const SignageDetail: React.FC = () => {
       y += textLineH;
       ctx.fillText(ln, totalW / 2, y);
     });
+    // [修正 2026-09-22] 原实现未把 <a> 挂载到 DOM 就 click() ——
+    // Firefox 下不会触发下载（现象是"点了没反应"，且无报错）。
+    // 此处是 canvas 生成的 data URL 而非 Blob，故不能复用 downloadBlob，
+    // 但同样需要 appendChild / remove 这一对步骤。
     const link = document.createElement('a');
     link.download = `标识二维码_${sd.code || sd.id}.png`;
     link.href = out.toDataURL('image/png');
+    document.body.appendChild(link);
     link.click();
+    link.remove();
   };
 
   // [修复 2026-09-04] 构建附件列表

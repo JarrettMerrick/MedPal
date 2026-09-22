@@ -7,6 +7,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { downloadBlob } from '../../utils/fileUtils';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { Card, Descriptions, Tag, Button, Spin, Row, Col, Typography, Space, Empty, theme, App } from 'antd';
 import { EditOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons';
@@ -77,9 +78,9 @@ const DepartmentDetail: React.FC = () => {
       const url = getOriginalUrl(path) || '';
       const resp = await fetch(url);
       const blob = await resp.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = finalName;
-      a.click(); URL.revokeObjectURL(a.href);
+      // [修正 2026-09-22] 改用公共 downloadBlob：原实现缺 appendChild
+      // （Firefox 下 click() 不触发下载），且 revoke 紧跟 click 之后。
+      downloadBlob(blob, finalName);
     } catch { /* silent */ }
   };
 

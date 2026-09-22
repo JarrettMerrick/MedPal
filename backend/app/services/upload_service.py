@@ -724,20 +724,28 @@ def build_referenced_set(db) -> set[str]:
         被引用的相对路径集合（如 {"doctor/xxx.jpg", "dept/yyy.jpg"}）
     """
     from app.models.staff import Staff
-    from app.models.doctor import Doctor
-    from app.models.nurse import Nurse
     from app.models.department import Department
     from app.models.staff_card import StaffCard
 
     referenced: set[str] = set()
 
-    # 1. 人员表（Staff、Doctor、Nurse）的正面/侧面照
-    for model in (Staff, Doctor, Nurse):
-        for row in db.query(model.front_photo, model.side_photo).all():
-            if row.front_photo:
-                referenced.add(row.front_photo)
-            if row.side_photo:
-                referenced.add(row.side_photo)
+    # 1. 人员正面/侧面照
+    #
+    # [修正 2026-09-22] 原先这里遍历 `(Staff, Doctor, Nurse)` 三个模型 ——
+    # Doctor / Nurse 是项目早期的**独立人员模型**，后来人员已统一到 staff 表，
+    # 这两个模型不再被 models/__init__.py 导出（属废弃代码），但此处仍在引用。
+    #
+    # 后果具有欺骗性：`from app.models.doctor import Doctor` 本身能成功（文件还在），
+    # 而**老库里恰好留有历史表** doctors/nurses，于是查询也能跑通 —— 直到在
+    # 不含这两张表的库（如新建的测试库）上运行，才抛 `no such table: nurses`。
+    # 表现为"删除员工失败 / 图片清理任务失败"，但错误信息完全指向不了真正的原因。
+    #
+    # 现在只查 staff 表 —— 它是人员数据的唯一来源，前两者已无数据写入。
+    for row in db.query(Staff.front_photo, Staff.side_photo).all():
+        if row.front_photo:
+            referenced.add(row.front_photo)
+        if row.side_photo:
+            referenced.add(row.side_photo)
 
     # 2. 科室合照
     for row in db.query(Department.group_photo).all():
