@@ -26,6 +26,11 @@ export interface RegistrationPayload {
 export interface RegistrationSubmitResult {
   status: string;
   id: number;
+  /**
+   * [新增 2026-09-17] 注册成功即可凭工号密码登录（审核通过前仅有个人信息相关权限）。
+   * 保留字段以便前端在成功页提示「可直接登录」。
+   */
+  can_login?: boolean;
   /** 若该工号上次申请被驳回，回显驳回原因 */
   last_reject_reason: string | null;
 }

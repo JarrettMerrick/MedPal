@@ -147,14 +147,16 @@ const DepartmentList: React.FC = () => {
               <Col key={d.id} {...getColSpan()}>
                 <Card
                   hoverable
-                  style={{ background: token.colorBgContainer, position: 'relative' }}
+                  style={{
+                    position: 'relative',
+                    /* [改造 2026-09-19] 科室类别色条由「绝对定位的直角矩形」改为卡片左边框。
+                       原因同人员管理页：新拟物下卡片圆角为 20px，直角色条会被裁切成
+                       上下断开的细弧，与卡片脱节。border-left 会随圆角自然收窄并融入卡片。
+                       科室类别颜色属业务语义色，保持不变。 */
+                    borderLeft: `4px solid ${DEPT_CATEGORY_HEX[d.category] || token.colorBorder}`,
+                  }}
                   styles={{ body: { padding: token.paddingMD } }}
                 >
-                  {/* 左侧科室类别色条 */}
-                  <div style={{
-                    position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
-                    background: DEPT_CATEGORY_HEX[d.category] || token.colorBorder,
-                  }} />
                   <Tag color={DEPT_CATEGORY_HEX[d.category] || 'blue'} style={{ marginBottom: token.marginXS }}>{d.category}</Tag>
                   <Text strong style={{ display: 'block', marginBottom: token.marginXS, fontSize: token.fontSizeLG }}>{d.name}</Text>
                   <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ fontSize: token.fontSizeSM }}>

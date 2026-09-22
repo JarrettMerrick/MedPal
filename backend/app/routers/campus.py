@@ -5,12 +5,19 @@
 院区-楼栋-楼层-区域 路由模块
 """
 
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, has_permission, PERM_SIGNAGE_CAMPUS
+from app.dependencies import (
+    get_current_user, has_permission, require_any_permission,
+    PERM_SIGNAGE_CAMPUS,
+    # [修复 2026-09-17] 空间结构读接口的权限集合（按前端调用场景归纳）
+    PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE, PERM_SIGNAGE_EDIT, PERM_SIGNAGE_FLOORPLAN,
+    PERM_DATA_EXPORT,
+)
 from app.models.user import User
 from app.schemas.campus import (
     CampusCreate, CampusUpdate, CampusOut,
@@ -18,6 +25,8 @@ from app.schemas.campus import (
     FloorCreate, FloorUpdate, FloorOut,
     AreaCreate, AreaUpdate, AreaOut,
     CampusTreeNode,
+    # [新增 2026-09-17] 楼层号唯一性校验按规范化值比较（旧数字写法与新字母编号视为同一层）
+    normalize_floor_number,
 )
 from app.services.campus_service import (
     get_campus, get_campus_by_name, get_all_campuses, get_campuses,
@@ -37,7 +46,26 @@ from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
 from fastapi import Request
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/campus", tags=["院区管理"])
+
+# [修复 2026-09-17] 空间结构读接口的权限集合：
+# 原实现所有读端点仅要求登录，任意账号可读取全院院区/楼栋/楼层/区域的完整结构。
+# 按前端实际调用场景归纳（院区/楼栋/楼层/区域是各标识页面的下拉数据源）：
+#   - 院区、楼栋：标识管理（view）、标识表单（create/edit）、平面设置（floorplan）、
+#     数据管理「标识导出」（data.export）、院区管理（campus）均会调用；
+#   - 楼层、区域：仅标识表单与平面设置、院区管理使用；
+#   - 无任何调用方的详情端点：收敛为标识查看 / 院区管理两类权限。
+_CAMPUS_READ_PERMS = (
+    PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE,
+    PERM_SIGNAGE_EDIT, PERM_SIGNAGE_FLOORPLAN, PERM_DATA_EXPORT,
+)
+_CAMPUS_READ_PERMS_NO_EXPORT = (
+    PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE,
+    PERM_SIGNAGE_EDIT, PERM_SIGNAGE_FLOORPLAN,
+)
+_FLOOR_AREA_READ_PERMS = (PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_CREATE, PERM_SIGNAGE_EDIT)
 
 
 def _audit(db, action, current_user, target, detail, request):
@@ -48,7 +76,11 @@ def _audit(db, action, current_user, target, detail, request):
                      target=str(target), ip_address=client_ip)
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 空间结构变更后补发站内信（事件：院区 / 楼栋 / 楼层 / 区域变更）：
     # 在 _audit 内统一发送，一次覆盖全部 12 个写端点（创建/更新/删除 × 院区/楼栋/楼层/区域）。
@@ -85,7 +117,11 @@ def _audit(db, action, current_user, target, detail, request):
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
 
 # ==================== 院区接口 ====================
@@ -97,7 +133,8 @@ def list_campuses(
     page_size: int = Query(20, ge=1, le=500),
     search: str = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录，现收敛为院区管理权限（仅院区管理页调用）
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS)),
 ):
     """获取院区列表"""
     campuses, total = get_campuses(db, page, page_size, search)
@@ -121,7 +158,8 @@ def list_campuses(
 @router.get("/all")
 def list_all_campuses(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录：按调用场景（标识管理/表单/平面设置/标识导出）放行权限集合
+    current_user: User = Depends(require_any_permission(*_CAMPUS_READ_PERMS)),
 ):
     """获取所有启用的院区"""
     campuses = get_all_campuses(db, active_only=True)
@@ -131,7 +169,8 @@ def list_all_campuses(
 @router.get("/tree")
 def get_campus_tree_api(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录；当前前端无调用方，收敛为标识查看 / 院区管理
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW)),
 ):
     """获取院区-楼栋-楼层-区域树形结构"""
     return get_campus_tree(db)
@@ -141,7 +180,8 @@ def get_campus_tree_api(
 def get_campus_detail(
     campus_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录；当前前端无调用方，收敛为标识查看 / 院区管理
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW)),
 ):
     """获取院区详情"""
     campus = get_campus(db, campus_id)
@@ -252,7 +292,8 @@ def list_buildings(
     page_size: int = Query(20, ge=1, le=500),
     search: str = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录：按调用场景（标识管理/表单/平面设置/标识导出）放行权限集合
+    current_user: User = Depends(require_any_permission(*_CAMPUS_READ_PERMS)),
 ):
     """获取院区下的楼栋列表"""
     # 检查院区是否存在
@@ -283,7 +324,8 @@ def list_buildings(
 def get_building_detail(
     building_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录；当前前端无调用方，收敛为标识查看 / 院区管理
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW)),
 ):
     """获取楼栋详情"""
     building = get_building(db, building_id)
@@ -409,7 +451,8 @@ def list_floors(
     # 超出原上限 100 会被 422 拦截，前端静默容错后表现为"楼层下拉无数据"
     page_size: int = Query(20, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录：按调用场景（标识表单/平面设置/院区管理）放行权限集合
+    current_user: User = Depends(require_any_permission(*_CAMPUS_READ_PERMS_NO_EXPORT)),
 ):
     """获取楼栋下的楼层列表"""
     # 检查楼栋是否存在
@@ -444,7 +487,8 @@ def list_floors(
 def get_floor_detail(
     floor_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录；当前前端无调用方，收敛为标识查看 / 院区管理
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW)),
 ):
     """获取楼层详情"""
     floor = get_floor(db, floor_id)
@@ -485,9 +529,11 @@ def create_floor_api(
         raise HTTPException(status_code=400, detail=msg)
     
     # 检查楼层号在楼栋内是否唯一
+    # [调整 2026-09-17] 楼层号为字母编号（F1/B1），按规范化值比较，
+    # 避免历史数字写法（3 与 F3）或大小写差异导致的重复楼层
     existing_floors = get_floors_by_building(db, req.building_id, active_only=False)
     for floor in existing_floors:
-        if floor.floor_number == req.floor_number:
+        if normalize_floor_number(floor.floor_number) == req.floor_number:
             raise HTTPException(status_code=400, detail="楼层号在楼栋内已存在")
     
     floor = create_floor(db, req, created_by=current_user.employee_id)
@@ -532,10 +578,11 @@ def update_floor_api(
         raise HTTPException(status_code=400, detail=msg)
     
     # 检查楼层号在楼栋内是否唯一（排除自身）
-    if req.floor_number and req.floor_number != floor.floor_number:
+    # [调整 2026-09-17] 同上：按规范化值比较（库中旧值可能是数字写法）
+    if req.floor_number and normalize_floor_number(req.floor_number) != normalize_floor_number(floor.floor_number):
         existing_floors = get_floors_by_building(db, building_id, active_only=False)
         for f in existing_floors:
-            if f.id != floor_id and f.floor_number == req.floor_number:
+            if f.id != floor_id and normalize_floor_number(f.floor_number) == normalize_floor_number(req.floor_number):
                 raise HTTPException(status_code=400, detail="楼层号在楼栋内已存在")
     
     updated_floor = update_floor(db, floor_id, req, updated_by=current_user.employee_id)
@@ -593,7 +640,8 @@ def list_areas(
     # [修复 2026-09-08] 放宽 page_size 上限至 500，与其他 campus 列表端点口径一致
     page_size: int = Query(20, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录：按调用场景（标识表单/院区管理）放行权限集合
+    current_user: User = Depends(require_any_permission(*_FLOOR_AREA_READ_PERMS)),
 ):
     """获取楼层下的区域列表"""
     # 检查楼层是否存在
@@ -629,7 +677,8 @@ def list_areas(
 def get_area_detail(
     area_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 原仅要求登录；当前前端无调用方，收敛为标识查看 / 院区管理
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_CAMPUS, PERM_SIGNAGE_VIEW)),
 ):
     """获取区域详情"""
     area = get_area(db, area_id)

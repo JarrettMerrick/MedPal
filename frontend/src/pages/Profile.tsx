@@ -23,7 +23,8 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Form, Input, Select, Button, Card, Typography, App, Table, Tag, Space, Tooltip } from 'antd';
+// [新增 2026-09-17] 待审核账号的显著提示使用 Alert
+import { Form, Input, Select, Button, Card, Typography, App, Table, Tag, Space, Tooltip, Alert } from 'antd';
 import { UndoOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useAuth } from '../contexts/AuthContext';
@@ -70,7 +71,8 @@ const formatTime = (value: string | null): string =>
 
 const Profile: React.FC = () => {
   const navigate = useNavigate();
-  const { user, setUser } = useAuth();
+  // [新增 2026-09-17] isPendingReview：待审核账号在页面顶部展示提示横幅
+  const { user, setUser, isPendingReview } = useAuth();
   const { message, modal } = App.useApp(); // [改进] 使用 App.useApp 获取 message 实例
   const [form] = Form.useForm<ProfileFormValues>();
   const [loading, setLoading] = useState(false);
@@ -258,6 +260,18 @@ const Profile: React.FC = () => {
       {/* 标题栏 */}
       <PageHeader title="个人信息" onBack={() => navigate('/dashboard')} />
 
+      {/* [新增 2026-09-17] 待审核账号提示：注册成功已可登录，但审核通过前仅开放
+          个人信息相关权限（侧边栏也已精简），此处给出明确说明与后续指引 */}
+      {isPendingReview && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="账号正在审核中"
+          description="您已成功登录，可在此完善个人资料。审核通过前仅能查看和修改个人信息，审核通过后将自动解锁系统全部功能。"
+        />
+      )}
+
       {/* [新增 2026-09-11] 显著位置提示「XX 未审核」（本人的待审变更） */}
       <StaffChangeNotice
         changes={pendingChanges}
@@ -294,7 +308,7 @@ const Profile: React.FC = () => {
           </Form.Item>
 
           {/* 个人介绍区 */}
-          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginTop: 8 }}>
+          <div style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 16, marginTop: 8 }}>
             <Title level={5} style={{ marginBottom: 16 }}>个人介绍</Title>
 
             <Form.Item
@@ -349,7 +363,9 @@ const Profile: React.FC = () => {
           dataSource={myChanges}
           loading={changesLoading}
           pagination={false}
-          scroll={{ x: 660 }}
+          // [调整 2026-09-19] 移除固定 scroll={{ x: 660 }}：该表仅 3 列，
+          // 660px 的固定滚动宽度在宽屏下反而限制了表格铺满，且保留了无用的滚动条占位。
+          scroll={{ x: 'max-content' }}
           locale={{ emptyText: '暂无修改记录' }}
         />
       </Card>

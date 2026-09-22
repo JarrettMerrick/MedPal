@@ -31,8 +31,19 @@ export interface Signage {
   oa_number?: string;
   manufacturer?: string;
   vendor_contact?: string;
-  design_photo?: string;
-  installation_photo?: string;
+  // [调整 2026-09-17] 允许 null：解除关联时前端会**显式提交 null**（清空字段），
+  // 若类型只允许 undefined，调用方无法表达"清空"语义
+  design_photo?: string | null;
+  installation_photo?: string | null;
+  // [新增 2026-09-17] 文件库引用：指向「文件管理」中的设计文件记录（引用共享）
+  design_file_id?: number | null;
+  /**
+   * [新增 2026-09-17] 引用的设计文件在「文件管理」中的**使用名**（后端按 design_file_id 关联填充）。
+   * 展示设计文件时优先使用它，避免显示 design_photo 路径中的原始落盘名
+   * （形如 RC-XX-0-001_design_20260917_101530_ab12cd34.ai）。
+   * 未引用文件库（directly 上传的旧数据）时为空，前端回退到路径文件名。
+   */
+  design_file_name?: string | null;
   // [新增 2026-09-07] 最近一次巡检日期
   last_inspection_date?: string;
   created_by?: string;
@@ -199,6 +210,10 @@ export interface AlertedSignageItem {
 export const getAlertedSignages = (): Promise<AlertedSignageItem[]> =>
   api.get('/signage-alerts/alerted-signage-ids').then((r) => r.data.items);
 
+// [删除 2026-09-17] 标识预警汇总（SignageAlertSummary / getSignageAlertSummary）已移除：
+// 「标识预警」页与菜单红点整体下线，状态异常标识与维修处理统一在「标识维修」页
+// （GET /signage-repairs 的「待维修 / 维修处理中」行）展示与处理。
+
 // ============================================================
 // [新增 2026-09-09] 标识总览（/signage-overview）与维修记录（/signage-repairs）
 // ============================================================
@@ -279,12 +294,24 @@ export interface SignageRepairListItem {
   repair_photo_before?: string;
   repair_photo?: string;
   started_by?: string;
+  /** [新增 2026-09-17] 发起人姓名（后端按工号回查人员表；查不到时为空） */
+  started_by_name?: string;
   started_at?: string;
   completed_by?: string;
+  /** [新增 2026-09-17] 完成人姓名 */
+  completed_by_name?: string;
   completed_at?: string;
   duration_hours?: number | null;
-  status: 'in_progress' | 'completed';
+  /**
+   * [调整 2026-09-17] 新增 pending（待维修）：
+   * 标识状态为轻微破损 / 严重损坏且尚未发起维修，可直接发起维修。
+   */
+  status: 'pending' | 'in_progress' | 'completed';
   status_label: string;
+  /** [新增 2026-09-17] 标识当前状态（pending 行用于区分损坏等级） */
+  signage_status?: string | null;
+  /** [新增 2026-09-17] 标识当前状态中文（轻微破损 / 严重损坏） */
+  signage_status_label?: string | null;
 }
 
 export interface SignageRepairListResponse {
@@ -300,7 +327,8 @@ export interface RepairListParams {
   end_date?: string;
   repair_party?: 'vendor' | 'engineering';
   supplier_id?: number;
-  status?: 'in_progress' | 'completed';
+  /** [调整 2026-09-17] 支持按「待维修 / 维修处理中 / 已完成」筛选 */
+  status?: 'pending' | 'in_progress' | 'completed';
 }
 
 const buildRepairQuery = (params: RepairListParams): string => {

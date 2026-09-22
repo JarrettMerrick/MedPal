@@ -139,7 +139,7 @@ const RegulationForm: React.FC = () => {
                 if (!catId) return null;
                 return (
                   <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: '#999' }}>当前：{categories.find((c) => c.id === catId)?.name}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-3)' }}>当前：{categories.find((c) => c.id === catId)?.name}</span>
                     <Button type="link" danger size="small" onClick={async () => {
                       try { await deleteCategory(catId); setCategories((p) => p.filter((c) => c.id !== catId)); form.setFieldsValue({ category_id: undefined }); message.success('已删除'); }
                       catch { message.error('删除失败'); }

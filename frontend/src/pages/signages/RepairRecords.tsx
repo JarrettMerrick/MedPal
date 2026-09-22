@@ -32,6 +32,17 @@ async function downloadBlob(url: string, filename: string): Promise<void> {
   URL.revokeObjectURL(a.href);
 }
 
+// [修复 2026-09-19] 接入维修操作按钮。
+// 历史原因：「标识预警」页下线时，其维修能力（发起维修 / 完成维修）约定并入本页，
+// 共用组件 SignageRepairActions 也已建好，但**接入代码漏了** ——
+// 结果是本项目任何页面都无法执行维修操作（无「标识维修」/「完成维修」按钮），
+// 用户既发不起维修、也无法把「维修处理中」的记录更新为「已完成」。
+import {
+  useSignageRepairActions,
+  SignageRepairButton,
+  SignageCompleteButton,
+} from '../../components/SignageRepairActions';
+
 const RepairRecords: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<SignageRepairListItem[]>([]);
@@ -119,6 +130,14 @@ const RepairRecords: React.FC = () => {
     }
   };
 
+  // [修复 2026-09-19] 维修操作：发起 / 完成维修成功后都刷新列表。
+  // openRepair 打开「发起维修」弹窗（选择维修方、供应商、OA 单号）；
+  // openComplete 打开「完成维修」弹窗（可附维修后照片）；modals 需在页面中渲染。
+  const { openRepair, openComplete, modals, submitting } = useSignageRepairActions({
+    onStarted: () => { fetchList(); },
+    onCompleted: () => { fetchList(); },
+  });
+
   const columns = [
     {
       // [调整 2026-09-14] 标识编码改为可点击链接，跳转该标识的详情页。
@@ -130,9 +149,21 @@ const RepairRecords: React.FC = () => {
           ? <Link to={`/signages/${r.signage_id}`}>{code}</Link>
           : '-',
     },
-    { title: '标识名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 160 },
+    // [调整 2026-09-19] 「标识名称」与「位置」去掉固定宽度，改为**自适应 + 允许换行**。
+    // 本表原 11 列全部定宽（合计 1510px），没有任何列能伸缩 —— 容器不足时必然横向滚动。
+    // 这两列是全表最长的文本列，让它们吸收/让出空间后，表格总宽可随容器收缩：
+    // 宽屏各自展开、窄屏折行（不再截断，用户能看到完整名称与位置）。
     {
-      title: '位置', key: 'location', ellipsis: true, width: 180,
+      title: '标识名称', dataIndex: 'name', key: 'name',
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 130 } as React.CSSProperties,
+      }),
+    },
+    {
+      title: '位置', key: 'location',
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 140 } as React.CSSProperties,
+      }),
       render: (_: unknown, r: SignageRepairListItem) =>
         [r.campus, r.building, r.floor].filter(Boolean).join(' / ') || '-',
     },
@@ -148,14 +179,14 @@ const RepairRecords: React.FC = () => {
       render: (_: unknown, r: SignageRepairListItem) =>
         r.repair_photo_before
           ? <Image src={getOriginalUrl(r.repair_photo_before) || ''} alt="维修前" width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
-          : <span style={{ color: '#97A3B2', fontSize: 12 }}>暂无现场照片</span>,
+          : <span style={{ color: 'var(--text-3)', fontSize: 12 }}>暂无现场照片</span>,
     },
     {
       title: '维修后照片', key: 'after', width: 100, align: 'center' as const,
       render: (_: unknown, r: SignageRepairListItem) =>
         r.repair_photo
           ? <Image src={getOriginalUrl(r.repair_photo) || ''} alt="维修后" width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
-          : <span style={{ color: '#97A3B2', fontSize: 12 }}>暂无现场照片</span>,
+          : <span style={{ color: 'var(--text-3)', fontSize: 12 }}>暂无现场照片</span>,
     },
     {
       title: '发起', key: 'start', width: 170,
@@ -163,7 +194,7 @@ const RepairRecords: React.FC = () => {
         <span style={{ fontSize: 12 }}>
           {r.started_at ? formatDateTimeStandard(r.started_at) : '-'}
           <br />
-          <span style={{ color: '#97A3B2' }}>{r.started_by || '未知'}</span>
+          <span style={{ color: 'var(--text-3)' }}>{r.started_by || '未知'}</span>
         </span>
       ),
     },
@@ -173,7 +204,7 @@ const RepairRecords: React.FC = () => {
         <span style={{ fontSize: 12 }}>
           {r.completed_at ? formatDateTimeStandard(r.completed_at) : '-'}
           <br />
-          <span style={{ color: '#97A3B2' }}>{r.completed_by || '-'}</span>
+          <span style={{ color: 'var(--text-3)' }}>{r.completed_by || '-'}</span>
         </span>
       ),
     },
@@ -186,6 +217,56 @@ const RepairRecords: React.FC = () => {
       render: (v: string, r: SignageRepairListItem) => (
         <Tag color={r.status === 'completed' ? 'green' : 'processing'}>{v}</Tag>
       ),
+    },
+    {
+      // [修复 2026-09-19] 新增「操作」列，按**三种**状态分别呈现。
+      //
+      // ⚠️ 上一版的错误：只判断了 in_progress，其余一律走 else 显示"已完成" ——
+      // 而后端实际有三种状态（见 signage_repair_service.REPAIR_STATUS_LABELS）：
+      //     pending      待维修       ← 标识已损坏、尚未发起维修
+      //     in_progress  维修处理中
+      //     completed    已完成
+      // 结果「待维修」的行被错误地显示为"已完成"，且用户没有任何发起维修的入口。
+      //
+      // 现在：
+      //   pending      → 「标识维修」按钮（发起维修）
+      //   in_progress  → 「完成维修」按钮
+      //   completed    → 文字提示
+      title: '操作', key: 'actions', width: 140,
+      render: (_: unknown, r: SignageRepairListItem) => {
+        if (r.status === 'pending') {
+          // 待维修行的 id 由后端复用**标识 id**（见 _pending_to_item），
+          // 因此发起维修用 signage_id（回退到 id 以兼容两种数据来源）。
+          return (
+            <SignageRepairButton
+              onClick={() =>
+                openRepair({
+                  signage_id: r.signage_id || r.id,
+                  name: r.name,
+                  code: r.code,
+                })
+              }
+              disabled={submitting}
+            />
+          );
+        }
+        if (r.status === 'in_progress') {
+          return (
+            <SignageCompleteButton
+              onClick={() =>
+                openComplete({
+                  repair_id: r.id,
+                  signage_id: r.signage_id,
+                  name: r.name,
+                  code: r.code,
+                })
+              }
+              disabled={submitting}
+            />
+          );
+        }
+        return <span style={{ color: 'var(--text-3)', fontSize: 12 }}>已完成</span>;
+      },
     },
   ];
 
@@ -251,9 +332,18 @@ const RepairRecords: React.FC = () => {
         <Table
           columns={columns}
           dataSource={items}
-          rowKey="id"
+          // [修复 2026-09-19] rowKey 由 "id" 改为「状态 + id」的复合键：
+          // 本列表混排两类数据 —— 「待维修」行（pending）的 id 由后端复用**标识 id**，
+          // 而维修记录行的 id 是**维修记录 id**，两者取值空间重叠，
+          // 只用 id 作 key 会出现重复键，导致行复用错乱（勾选/展开错位）。
+          rowKey={(r) => `${r.status}-${r.id}`}
           loading={loading}
-          scroll={{ x: 1400 }}
+          // [调整 2026-09-19] 移除 scroll={{ x: 1400 }}：
+          // 该配置会**强制**表格出现横向滚动条（内容不足 1400px 时也保留占位），
+          // 与「表格整体不出现横向滚动条」的要求冲突。
+          // 去掉后由 table-layout: auto 按内容分配列宽，超长文本在单元格内换行；
+          // 配合全局 .ant-table-wrapper table{width:100%} 保证总宽恒等于容器。
+          scroll={{ x: 'max-content' }}
           pagination={{
             current: page, pageSize, total,
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
@@ -261,6 +351,10 @@ const RepairRecords: React.FC = () => {
           }}
         />
       </Card>
+
+      {/* [修复 2026-09-19] 渲染维修操作弹窗（完成维修 / 照片上传）——
+          必须挂载在页面中，否则点击操作列的按钮不会有任何反应 */}
+      {modals}
 
       {/* 导出确认弹窗：展示当前筛选范围与条数 */}
       <Modal
@@ -273,7 +367,7 @@ const RepairRecords: React.FC = () => {
         cancelText="取消"
       >
         <p>将按当前筛选条件导出维修记录（{exportModal.format === 'xlsx' ? 'Excel' : 'CSV'}）：</p>
-        <ul style={{ fontSize: 13, color: '#5B6B7B' }}>
+        <ul style={{ fontSize: 13, color: 'var(--text-2)' }}>
           <li>关键词：{keyword.trim() || '不限'}</li>
           <li>日期范围：{range ? `${range[0].format('YYYY-MM-DD')} ~ ${range[1].format('YYYY-MM-DD')}` : '不限'}</li>
           <li>维修部门：{party === 'vendor' ? `供应商维修${supplierId ? `（${suppliers.find((s) => s.id === supplierId)?.name || ''}）` : ''}` : party === 'engineering' ? '工程部维修' : '不限'}</li>

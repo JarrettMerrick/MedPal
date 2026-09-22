@@ -1,0 +1,913 @@
+/* Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com) */
+/* Licensed under the MIT License. See LICENSE file for details. */
+
+/**
+ * 新拟物组件覆盖层（Neumorphism Overrides）
+ * ======================================
+ * 只做一件事：把 Ant Design 组件的默认观感改造成新拟物。
+ *
+ * 三条纪律
+ * --------
+ * 1) **全部规则限定在 [data-ui-style="neu"] 之下** —— 经典模式下这些规则完全不命中，
+ *    改造前的样式原样生效，回退成本为零（这是「可切换」机制的关键）。
+ * 2) **只用变量、不写死色值** —— 阴影与底色全部来自 neu-tokens.css，
+ *    因此**浅色与深色共用同一份规则**，深色只是变量取值不同（亮暗自动反转），
+ *    无需维护两套重复样式。
+ * 3) **取消描边** —— 立体感全部由阴影表达；聚焦态在凹陷阴影之上叠加品牌色聚焦环，
+ *    保证键盘用户可明确感知焦点（新拟物固有的低对比度弱项补偿）。
+ *
+ * 命名与登录页既有配方保持一致（复用 --neu-* 与相同的技法），
+ * 使全站观感与已完成的登录/注册页统一。
+ */
+
+/* ==================== 1. 表面：卡片 / 面板 ==================== */
+[data-ui-style='neu'] .ant-card {
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-sm);
+  transition: box-shadow var(--ease-neu), transform var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-card:hover {
+  /* 悬停加深一档，给出非阴影之外的稳定反馈（配合下方轻微上移） */
+  box-shadow: var(--neu-raised-md);
+}
+[data-ui-style='neu'] .ant-card .ant-card-head {
+  border-bottom: none;
+  background: transparent;
+}
+/* 卡片内嵌的卡片（如设置页分组）层次更浅，避免阴影堆叠发脏 */
+[data-ui-style='neu'] .ant-card .ant-card {
+  box-shadow: var(--neu-inset-xs);
+}
+
+/* 分隔线：取消实线，改用极浅同色分界 */
+[data-ui-style='neu'] .ant-divider {
+  border-color: var(--line-softer);
+}
+[data-ui-style='neu'] .ant-divider-vertical {
+  border-color: var(--line-softer);
+}
+
+/* ==================== 2. 表单控件：凹陷嵌入底色 ==================== */
+/* 输入框 / 文本域 / 数字输入 / 密码框 */
+[data-ui-style='neu'] .ant-input,
+[data-ui-style='neu'] .ant-input-affix-wrapper,
+[data-ui-style='neu'] .ant-input-number,
+[data-ui-style='neu'] .ant-input-number-affix-wrapper,
+[data-ui-style='neu'] textarea.ant-input {
+  border: none !important;
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-inset-sm) !important;
+  border-radius: var(--radius-control) !important;
+  color: var(--text-1) !important;
+}
+[data-ui-style='neu'] .ant-input:hover,
+[data-ui-style='neu'] .ant-input-affix-wrapper:hover,
+[data-ui-style='neu'] .ant-input-number:hover {
+  border: none !important;
+  box-shadow: var(--neu-inset-sm) !important;
+}
+/* 带前后缀的输入框为 span > input 结构，两条规则会同时命中造成「双重凹陷」，
+   内部 input 重置为透明，只保留外层一层阴影 */
+[data-ui-style='neu'] .ant-input-affix-wrapper .ant-input,
+[data-ui-style='neu'] .ant-input-number-affix-wrapper .ant-input-number-input {
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* 聚焦：凹陷保持 + 品牌色聚焦环（键盘可访问性补偿） */
+[data-ui-style='neu'] .ant-input:focus,
+[data-ui-style='neu'] .ant-input-affix-wrapper:focus-within,
+[data-ui-style='neu'] .ant-input-affix-wrapper-focused,
+[data-ui-style='neu'] .ant-input-number-focused,
+[data-ui-style='neu'] .ant-select-focused:not(.ant-select-disabled) .ant-select-selector {
+  border: none !important;
+  box-shadow: var(--neu-inset-sm), var(--focus-ring) !important;
+}
+
+/* 下拉框 / 日期选择 */
+[data-ui-style='neu'] .ant-select:not(.ant-select-customize-input) .ant-select-selector,
+[data-ui-style='neu'] .ant-picker {
+  border: none !important;
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-inset-sm) !important;
+  border-radius: var(--radius-control) !important;
+  color: var(--text-1) !important;
+}
+[data-ui-style='neu'] .ant-select:not(.ant-select-customize-input):hover .ant-select-selector,
+[data-ui-style='neu'] .ant-picker:hover {
+  border: none !important;
+  box-shadow: var(--neu-inset-sm) !important;
+}
+[data-ui-style='neu'] .ant-picker-focused {
+  border: none !important;
+  box-shadow: var(--neu-inset-sm), var(--focus-ring) !important;
+}
+
+/* 占位符与图标弱化，避免与新拟物的柔和基调冲突 */
+[data-ui-style='neu'] .ant-input::placeholder,
+[data-ui-style='neu'] .ant-select-selection-placeholder,
+[data-ui-style='neu'] .ant-picker-input > input::placeholder {
+  color: var(--text-placeholder) !important;
+}
+[data-ui-style='neu'] .ant-input-prefix .anticon,
+[data-ui-style='neu'] .ant-input-suffix .anticon,
+[data-ui-style='neu'] .ant-select-arrow,
+[data-ui-style='neu'] .ant-picker-suffix,
+[data-ui-style='neu'] .ant-picker-clear {
+  color: var(--text-icon) !important;
+}
+
+/* 表单校验错误态：保留错误色描边语义（可访问性优先于风格纯粹） */
+[data-ui-style='neu'] .ant-form-item-has-error .ant-input,
+[data-ui-style='neu'] .ant-form-item-has-error .ant-input-affix-wrapper,
+[data-ui-style='neu'] .ant-form-item-has-error .ant-select-selector {
+  box-shadow: var(--neu-inset-sm), 0 0 0 1.5px var(--danger) !important;
+}
+
+/* ==================== 3. 按钮 ==================== */
+/* 主按钮：品牌色「彩色凸起」—— 全站唯一高饱和元素，专供主操作 */
+[data-ui-style='neu'] .ant-btn-primary {
+  border: none !important;
+  background: var(--neu-accent-gradient) !important;
+  color: #fff !important;
+  box-shadow: var(--neu-accent-raised) !important;
+  transition: box-shadow var(--ease-neu), background var(--ease-neu), transform var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-btn-primary:not(:disabled):hover {
+  background: var(--neu-accent-gradient-hover) !important;
+  box-shadow: var(--neu-accent-raised-hover) !important;
+  transform: translateY(-1px);
+}
+/* 按压：阴影由外扩转为内收，模拟物理按压 */
+[data-ui-style='neu'] .ant-btn-primary:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: var(--neu-accent-pressed) !important;
+}
+[data-ui-style='neu'] .ant-btn-primary:disabled {
+  box-shadow: none !important;
+  opacity: 0.55;
+}
+
+/* 次级按钮（default）：同底色凸起，文字用品牌色 */
+[data-ui-style='neu'] .ant-btn-default {
+  border: none !important;
+  background: var(--neu-bg) !important;
+  color: var(--accent) !important;
+  box-shadow: var(--neu-raised-sm) !important;
+  transition: box-shadow var(--ease-neu), color var(--ease-neu), transform var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-btn-default:not(:disabled):hover {
+  color: var(--accent-hover) !important;
+  box-shadow: var(--neu-raised-md) !important;
+  transform: translateY(-1px);
+}
+[data-ui-style='neu'] .ant-btn-default:not(:disabled):active {
+  color: var(--accent-strong) !important;
+  box-shadow: var(--neu-inset-sm) !important;
+  transform: translateY(0);
+}
+[data-ui-style='neu'] .ant-btn-default:disabled {
+  box-shadow: none !important;
+  opacity: 0.5;
+}
+
+/* 文字 / 链接按钮：无阴影，仅颜色反馈；悬停给极浅凹陷底以表达可点性 */
+[data-ui-style='neu'] .ant-btn-text,
+[data-ui-style='neu'] .ant-btn-link {
+  box-shadow: none !important;
+  border: none !important;
+  background: transparent !important;
+}
+[data-ui-style='neu'] .ant-btn-text:not(:disabled):hover {
+  background: var(--accent-soft) !important;
+}
+/* 危险按钮保留语义色描边（可访问性：危险操作必须醒目） */
+[data-ui-style='neu'] .ant-btn-dangerous:not(.ant-btn-primary) {
+  border: none !important;
+  color: var(--danger) !important;
+  box-shadow: var(--neu-raised-sm) !important;
+}
+[data-ui-style='neu'] .ant-btn-dangerous:not(.ant-btn-primary):hover {
+  box-shadow: var(--neu-raised-md) !important;
+}
+/* 图标按钮（表格行内操作）：凸起小圆，悬停加深 */
+[data-ui-style='neu'] .ant-btn-icon-only.ant-btn-text {
+  box-shadow: none !important;
+}
+[data-ui-style='neu'] .ant-btn-icon-only.ant-btn-text:hover {
+  background: var(--accent-soft) !important;
+  box-shadow: none !important;
+}
+
+/* ==================== 4. 表格：去描边 + 凹陷表头 ==================== */
+[data-ui-style='neu'] .ant-table {
+  background: transparent;
+}
+[data-ui-style='neu'] .ant-table-wrapper .ant-table-container {
+  border-radius: var(--radius-card);
+}
+/* [修正 2026-09-19] 让表格撑满容器宽度。
+   antd 的 table 默认按内容收缩（宽度不足时右侧会留白），这会导致：
+     ① 明明容器还有空间，未设定宽度的列（地址/邮箱）却拿不到，被过度挤压换行；
+     ② 表格右边缘与卡片右边缘不齐，视觉上"缺一块"。
+   设为 100% 后，剩余空间会按比例分配给未设 width 的列，
+   与「按实际数据长度自适应」的目标一致。 */
+[data-ui-style='neu'] .ant-table-wrapper table {
+  width: 100%;
+}
+[data-ui-style='neu'] .ant-table-thead > tr > th {
+  background: var(--neu-bg) !important;
+  border-bottom: none !important;
+  color: var(--text-2) !important;
+  font-weight: 600;
+  /* [修正 2026-09-19] 表头阴影修正。
+     原实现给**每个 th 单元格**分别套 raised-sm（带 ±4px 横向偏移的凸起阴影），
+     相邻单元格的左右投影会在列边界处互相叠加，形成一条条深浅不一的竖向条带；
+     列数越多（如信息审核页）越明显，表头看起来像「多块凸起拼在一起」而非一个整体。
+     现改为**横向零偏移的 inset 阴影**：每个单元格的明暗分布完全一致且横向不外扩，
+     相邻处自然无缝，表头呈现为一条连续的凹陷带；也与「表格容器抬起、表头下压」
+     的层次关系一致，并不会与数据行的悬浮高亮互相干扰。 */
+  box-shadow: inset 0 2px 5px var(--neu-inset-dark), inset 0 -1px 0 var(--neu-light);
+  /* [修正 2026-09-19] 表头文字由 nowrap 改为**允许换行**。
+     上一版用 nowrap 是为了避免「序号」这类窄列把表头挤成两行，但副作用更大：
+     nowrap 会让表头文字**溢出到相邻列**（不换行、也不截断），
+     视觉上表现为"栏目未对齐 / 超出列宽" —— 在「平面设置」这类
+     列宽紧凑、且使用 tableLayout="fixed" 的表格上尤其明显。
+     改为换行后表头始终落在自己列内；正常长度的表头（"序号""类别"）不会折行，
+     仅当列确实过窄时才折行，这也是比"压到隔壁列"更好的降级表现。 */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.35;
+  /* [调整 2026-09-19] 按需求改为**凸出**效果（原为凹陷）：
+     表头作为独立于数据体的实体浮起，配合下方行悬浮形成「抬起—响应」的层次。 */
+  box-shadow: var(--neu-raised-sm);
+}
+/* 表头单元格之间原本靠分隔线区分，凸起后改用圆角首尾包边避免"断块"感 */
+[data-ui-style='neu'] .ant-table-thead > tr > th:first-child {
+  border-start-start-radius: var(--radius-control);
+  border-end-start-radius: var(--radius-control);
+}
+[data-ui-style='neu'] .ant-table-thead > tr > th:last-child {
+  border-start-end-radius: var(--radius-control);
+  border-end-end-radius: var(--radius-control);
+}
+/* 去除表头单元格之间的竖向分割线 */
+[data-ui-style='neu'] .ant-table-thead > tr > th::before {
+  display: none !important;
+}
+[data-ui-style='neu'] .ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--line-softer) !important;
+  transition: background-color var(--ease-neu);
+}
+/* [调整 2026-09-19] 单元格左右内边距 16px → 12px：
+   宽表（如供应商 8 列）单列可省 8px、整表省 60px 以上，
+   对「不出现横向滚动条」的目标帮助明显，视觉上仍保有充分留白。 */
+[data-ui-style='neu'] .ant-table-thead > tr > th,
+[data-ui-style='neu'] .ant-table-tbody > tr > td {
+  padding-inline: 12px;
+}
+[data-ui-style='neu'] .ant-table-tbody > tr:last-child > td {
+  border-bottom: none !important;
+}
+[data-ui-style='neu'] .ant-table-tbody > tr:hover > td,
+[data-ui-style='neu'] .ant-table-tbody > tr.ant-table-row-hover > td {
+  background: var(--accent-soft) !important;
+}
+/* 选中行：浅青凸起感（配合左侧青蓝竖条呼应侧边栏选中态） */
+[data-ui-style='neu'] .ant-table-tbody > tr.ant-table-row-selected > td {
+  background: var(--accent-soft) !important;
+}
+[data-ui-style='neu'] .ant-table-cell-fix-left,
+[data-ui-style='neu'] .ant-table-cell-fix-right {
+  background: var(--neu-bg);
+}
+/* 空态槽：凹陷 */
+[data-ui-style='neu'] .ant-table-placeholder > td {
+  background: transparent !important;
+}
+
+/* 分页：当前页为品牌色凸起小圆 */
+[data-ui-style='neu'] .ant-pagination .ant-pagination-item {
+  border: none;
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+  border-radius: 10px;
+  transition: box-shadow var(--ease-neu), transform var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-pagination .ant-pagination-item:hover {
+  box-shadow: var(--neu-raised-sm);
+  transform: translateY(-1px);
+}
+[data-ui-style='neu'] .ant-pagination .ant-pagination-item-active {
+  box-shadow: var(--neu-inset-xs);
+  background: var(--neu-bg);
+}
+[data-ui-style='neu'] .ant-pagination .ant-pagination-item-active a {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+[data-ui-style='neu'] .ant-pagination .ant-pagination-prev .ant-pagination-item-link,
+[data-ui-style='neu'] .ant-pagination .ant-pagination-next .ant-pagination-item-link {
+  border: none;
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* ==================== 5. 浮层：弹窗 / 抽屉 / 下拉 / 气泡 ==================== */
+[data-ui-style='neu'] .ant-modal-content,
+[data-ui-style='neu'] .ant-drawer-content {
+  border: none;
+  border-radius: var(--radius-panel);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-lg);
+}
+[data-ui-style='neu'] .ant-modal-header,
+[data-ui-style='neu'] .ant-drawer-header {
+  background: transparent;
+  border-bottom: 1px solid var(--line-softer);
+}
+[data-ui-style='neu'] .ant-modal-footer,
+[data-ui-style='neu'] .ant-drawer-footer {
+  border-top: 1px solid var(--line-softer);
+}
+[data-ui-style='neu'] .ant-modal-mask,
+[data-ui-style='neu'] .ant-drawer-mask {
+  /* 遮罩略加强，保证浮层与底层有足够分离度（新拟物阴影偏浅） */
+  background: rgba(20, 32, 38, 0.42) !important;
+  backdrop-filter: blur(2px);
+}
+
+[data-ui-style='neu'] .ant-dropdown-menu,
+[data-ui-style='neu'] .ant-select-dropdown,
+[data-ui-style='neu'] .ant-picker-dropdown .ant-picker-panel-container,
+[data-ui-style='neu'] .ant-popover-inner,
+[data-ui-style='neu'] .ant-tooltip-inner {
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-md);
+}
+[data-ui-style='neu'] .ant-dropdown-menu-item,
+[data-ui-style='neu'] .ant-select-item {
+  border-radius: var(--radius-control);
+  transition: background-color var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-dropdown-menu-item:hover,
+[data-ui-style='neu'] .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background: var(--accent-soft) !important;
+}
+[data-ui-style='neu'] .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+[data-ui-style='neu'] .ant-tooltip-arrow::before {
+  background: var(--neu-bg);
+}
+
+/* ==================== 6. 选择类控件：凹陷 / 凸起 ==================== */
+/* 复选框：未选凹陷，选中品牌色凸起 */
+[data-ui-style='neu'] .ant-checkbox .ant-checkbox-inner {
+  border: none !important;
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-inset-xs) !important;
+  border-radius: 7px !important;
+  width: 18px;
+  height: 18px;
+}
+[data-ui-style='neu'] .ant-checkbox-checked .ant-checkbox-inner {
+  background: var(--accent) !important;
+  box-shadow: var(--neu-raised-xs) !important;
+}
+[data-ui-style='neu'] .ant-checkbox-checked .ant-checkbox-inner::after {
+  border-color: #fff !important;
+}
+[data-ui-style='neu'] .ant-checkbox-wrapper:hover .ant-checkbox-inner,
+[data-ui-style='neu'] .ant-checkbox:hover .ant-checkbox-inner {
+  border: none !important;
+}
+
+/* 单选：同上 */
+[data-ui-style='neu'] .ant-radio .ant-radio-inner {
+  border: none !important;
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-inset-xs) !important;
+}
+[data-ui-style='neu'] .ant-radio-checked .ant-radio-inner {
+  background: var(--accent) !important;
+  box-shadow: var(--neu-raised-xs) !important;
+}
+[data-ui-style='neu'] .ant-radio-checked .ant-radio-inner::after {
+  background: #fff !important;
+}
+
+/* 开关：轨道凹陷，滑块凸起 */
+[data-ui-style='neu'] .ant-switch {
+  border: none;
+  box-shadow: var(--neu-inset-xs);
+  background: var(--neu-bg);
+}
+[data-ui-style='neu'] .ant-switch .ant-switch-handle::before {
+  box-shadow: var(--neu-raised-xs);
+  background: #fff;
+}
+[data-ui-style='neu'] .ant-switch.ant-switch-checked {
+  background: var(--accent);
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* ==================== 7. 标签 / 徽标 / 头像 ==================== */
+[data-ui-style='neu'] .ant-tag {
+  border: none;
+  border-radius: 10px;
+  box-shadow: var(--neu-raised-xs);
+  background: var(--neu-bg);
+}
+[data-ui-style='neu'] .ant-badge-count {
+  box-shadow: var(--neu-raised-xs);
+  border: none;
+}
+[data-ui-style='neu'] .ant-avatar {
+  border: none;
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* ==================== 8. 提示条 / 空态 / 进度 ==================== */
+[data-ui-style='neu'] .ant-alert {
+  border: none;
+  border-radius: var(--radius-control);
+  box-shadow: var(--neu-inset-sm);
+  background: var(--neu-bg);
+}
+[data-ui-style='neu'] .ant-alert-info {
+  /* 信息类保留左侧品牌色竖条，颜色承载语义（不依赖阴影） */
+  border-left: 3px solid var(--accent);
+}
+[data-ui-style='neu'] .ant-empty-description {
+  color: var(--text-3);
+}
+[data-ui-style='neu'] .ant-progress-bg {
+  box-shadow: var(--neu-inset-xs);
+}
+
+/* ==================== 9. 折叠 / 步骤 / 分段控制 ==================== */
+[data-ui-style='neu'] .ant-collapse {
+  border: none;
+  background: transparent;
+}
+[data-ui-style='neu'] .ant-collapse > .ant-collapse-item {
+  border-bottom: 1px solid var(--line-softer);
+}
+[data-ui-style='neu'] .ant-collapse-content {
+  border-top: none;
+  background: transparent;
+}
+[data-ui-style='neu'] .ant-segmented {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-xs);
+  border-radius: var(--radius-control);
+  padding: 3px;
+}
+[data-ui-style='neu'] .ant-segmented .ant-segmented-item-selected {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+  border-radius: 10px;
+  color: var(--accent);
+}
+[data-ui-style='neu'] .ant-steps .ant-steps-item-icon {
+  border: none;
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+[data-ui-style='neu'] .ant-steps .ant-steps-item-process .ant-steps-item-icon {
+  background: var(--accent);
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* ==================== 10. 其他容器类组件 ==================== */
+[data-ui-style='neu'] .ant-descriptions-bordered .ant-descriptions-view {
+  border: none;
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+[data-ui-style='neu'] .ant-descriptions-bordered .ant-descriptions-item-label {
+  background: var(--neu-bg);
+  border-right: 1px solid var(--line-softer);
+  color: var(--text-2);
+}
+[data-ui-style='neu'] .ant-descriptions-bordered .ant-descriptions-item-content {
+  border-right: 1px solid var(--line-softer);
+}
+[data-ui-style='neu'] .ant-upload-drag {
+  border: none;
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-sm);
+  border-radius: var(--radius-card);
+}
+[data-ui-style='neu'] .ant-upload-drag:hover {
+  border: none;
+  box-shadow: var(--neu-inset-md), var(--focus-ring);
+}
+/* [调整 2026-09-19] 标签栏底部分界线：拟物语言不以描边表达边界。
+   原先直接沿用 antd 的 1px 实线，在连续同色的底上会形成一道突兀的硬边
+   （信息审核页顶部即为 Tabs，观感与整体的柔光感不一致）。
+   这里改为「透明描边 + 极浅同色底线 + 半透明」的柔和分界，
+   与侧边栏品牌区/底部区、表格表头的凹陷带保持同一套表达方式。 */
+/* ---- [调整 2026-09-19] 标签栏改为拟物「分段控件」范式 ----
+   站内信的「收件箱 / 发件箱 / 写站内信」，以及信息审核页的账号/变更审核切换，
+   原先沿用 antd 默认样式（仅一条下划线指示条 + 底部细分隔线），
+   在拟物界面里是一块显眼的"平面区域"，与周围质感脱节。
+   现采用与 Segmented（分段控件）**完全一致**的表达：
+     · 整个标签栏作为一块**凹陷槽**（inset 阴影 + 圆角 + 内边距）；
+     · 选中项为**凸起胶囊**（raised 阴影 + 品牌色文字 + 加粗）；
+     · hover 同样轻微凸起，与选中态构成「抬起 → 按下」的反馈。
+   这样标签栏在观感上就是一组真正的拟物按钮。 */
+
+/* 凹槽容器 */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-xs);
+  border-radius: var(--radius-control);
+  padding: 4px;
+  gap: 4px;
+}
+
+/* 单个标签：尺寸统一 —— 固定左右内边距与最小高度，
+   避免「收件箱（带未读角标）」比「发件箱」高出一截、或各标签宽窄失衡 */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
+  margin: 0 !important;
+  padding: 5px 16px !important;
+  border: none !important;
+  border-radius: 10px;
+  background: transparent;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  transition: background-color var(--ease-neu), box-shadow var(--ease-neu);
+}
+/* 标签内部内容同样垂直居中（含角标的 Space 与纯文本保持一致基线） */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab .ant-tabs-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* hover / 选中：凸起胶囊 */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab:hover {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+/* 取消默认的下划线指示条与底部分隔线：
+   边界已由「凹陷槽」表达，再叠加一条线会显得脏、也破坏了槽的完整性 */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
+  display: none !important;
+}
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav::before {
+  display: none !important;
+}
+
+[data-ui-style='neu'] .ant-tabs-tab-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 标签栏与下方内容的间距：凹槽自带 4px 内边距，默认 16px 会显得松散 */
+[data-ui-style='neu'] .ant-tabs-top > .ant-tabs-nav {
+  margin-bottom: 14px;
+}
+
+/* ==================== 11. 应用外壳：侧边栏 / 顶栏 / 抽屉 ==================== */
+/* 侧边栏：与页面底同色，取消右边框（层级由菜单与内容区的凹陷/凸起表达） */
+[data-ui-style='neu'] .ant-layout-sider {
+  border-right: none !important;
+  background: var(--neu-bg) !important;
+}
+
+/* ---- [新增 2026-09-19] 右侧主区顶栏（标题栏）拟物化 ----
+   顶栏原先只有「同色底 + 1px 下边框」，是一条平面感很强的横条，与已拟物化的
+   侧边栏/卡片/表格放在一起时显得"没做完"。
+   拟物语言里它应表现为「浮在内容之上的工作面」，因此：
+     · 去掉下描边 —— 拟物以光影而非描边表达边界；
+     · 用向下的柔和投影表达层级。顶栏的上/左/右三边分别被视口与侧边栏裁切，
+       只有下边缘与内容区相接，所以只需向下投射暗影即可，无需完整的双向阴影
+       （那反会在贴边处留下无意义的亮痕）；
+     · 顶栏内的图标/文字按钮补上 hover 凸起，与侧边栏菜单项保持同一套交互反馈。 */
+[data-ui-style='neu'] .app-header,
+[data-ui-style='neu'] .ant-layout-header {
+  /* [调整 2026-09-19] 与左侧品牌栏统一规格：同为 56px 高 + 四角圆角 + 同款凸起。
+     要显示**四角**圆角就必须脱离「贴边全宽」的形态 —— 全宽元素的上/左/右三边
+     贴着视口与侧边栏，圆角会被裁掉。因此加左右留白让它成为一条浮起的圆角面板，
+     并把 sticky 的 top 同步改成 8px：滚动时停在留白下方，四周圆角与阴影都完整可见。 */
+  height: 56px !important;
+  /* [调整 2026-09-19] 左右留白 12px → 24px，与下方内容容器的内边距（.app-content）**对齐**。
+     两者取同一个值，顶栏左右边缘就与下方卡片的左右边缘齐平；
+     原先 12px 既显局促、又与内容边缘错开，是"看起来没对齐"的根源。
+     下边距为 0：顶栏与内容之间已有 .app-content 的 padding-top(24px)，
+     再加 8px 会叠加成 32px，过于松散。 */
+  margin: 8px 24px 0;
+  border-radius: var(--radius-card);
+  border-bottom: none !important;
+  background: var(--neu-bg) !important;
+  /* 由「单向下投影」改为完整的双向凸起 —— 圆角面板的四周都需要明暗关系，
+     否则左右两侧与上缘会显得是"贴上去的色块"而非浮起的实体。 */
+  box-shadow: var(--neu-raised-sm);
+  top: 8px !important;
+}
+
+/* 顶栏留白随内容容器一起收紧（与 .app-content 的媒体查询保持同一档位，
+   否则窄屏下顶栏会比内容更宽、边缘错位） */
+@media (max-width: 1199px) {
+  [data-ui-style='neu'] .app-header,
+  [data-ui-style='neu'] .ant-layout-header {
+    margin: 8px 20px 0;
+  }
+}
+@media (max-width: 767px) {
+  [data-ui-style='neu'] .app-header,
+  [data-ui-style='neu'] .ant-layout-header {
+    margin: 8px 12px 0;
+  }
+}
+
+/* 顶栏内的文字/图标按钮：hover 时给一个凸起底，替代"仅文字变色"的平面反馈 */
+[data-ui-style='neu'] .ant-layout-header .ant-btn-link:hover,
+[data-ui-style='neu'] .ant-layout-header .ant-btn-text:hover {
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* 用户信息胶囊：保留浅青底（品牌呼应）并叠加凸起，与侧边栏菜单项一致 */
+[data-ui-style='neu'] .ant-layout-header .neu-user-chip:hover {
+  background: var(--accent-soft);
+  box-shadow: var(--neu-raised-xs);
+}
+/* 侧边栏内容区：整体作为一块与底同色的面板，避免出现独立色块 */
+[data-ui-style='neu'] .ant-layout-sider-children {
+  background: transparent;
+}
+/* 折叠触发器：去边框改柔和分界 */
+[data-ui-style='neu'] .ant-layout-sider-trigger {
+  background: var(--neu-bg) !important;
+  border-top: 1px solid var(--line-softer);
+  color: var(--text-2) !important;
+  box-shadow: none;
+}
+[data-ui-style='neu'] .ant-layout-sider-trigger:hover {
+  color: var(--accent) !important;
+}
+/* 侧边栏内菜单：透明底 + 无右侧分隔线 */
+[data-ui-style='neu'] .ant-layout-sider .ant-menu {
+  background: transparent;
+  border-inline-end: none !important;
+}
+/* 选中项：浅青凸起胶囊（与 --accent-soft 呼应） */
+[data-ui-style='neu'] .ant-menu-inline .ant-menu-item,
+[data-ui-style='neu'] .ant-menu-inline .ant-menu-submenu-title {
+  border-radius: var(--radius-control);
+  transition: background-color var(--ease-neu), box-shadow var(--ease-neu);
+}
+[data-ui-style='neu'] .ant-menu-inline .ant-menu-item-selected {
+  box-shadow: var(--neu-inset-xs);
+}
+
+/* ---- [新增 2026-09-19] 侧边栏拟物化增强 ----
+   此前侧边栏只做了「与底同色 + 去边框」，整体仍偏平面，与页面其它区域的拟物质感脱节。
+   这里把品牌区与底部区改为**凸起块**（拟物语言里的「浮起铭牌」），
+   并给菜单项补上 hover 态凸起 —— 与既有点击态的凹陷（inset-xs）构成
+   「抬起 → 按下」的完整反馈，这是 Soft UI 最具辨识度的交互隐喻。 */
+
+/* 品牌区：凸起铭牌（取消描边，边界完全由双向阴影表达） */
+[data-ui-style='neu'] .sider-brand {
+  border-bottom: none !important;
+  /* 用 margin 让出阴影投射空间，否则贴边处会被 Sider 的 overflow: hidden 裁掉 */
+  margin: 8px 10px 4px;
+  height: 56px !important; /* 覆盖内联的 64px，为上下留白腾出空间 */
+  border-radius: var(--radius-card);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* 底部区（折叠按钮 + 版本号）：同样作为凸起块 */
+[data-ui-style='neu'] .sider-footer {
+  border-top: none !important;
+  margin: 4px 10px 10px;
+  border-radius: var(--radius-card);
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* 菜单项 hover：轻微凸起。
+   限定在侧边栏内，避免影响可能复用 ant-menu-inline 的其他区域。 */
+[data-ui-style='neu'] .ant-layout-sider .ant-menu-inline .ant-menu-item:hover,
+[data-ui-style='neu'] .ant-layout-sider .ant-menu-inline .ant-menu-submenu-title:hover {
+  background: var(--neu-bg) !important;
+  box-shadow: var(--neu-raised-xs);
+}
+/* 已展开的父级子菜单标题：保持浅青呼应即可，不再叠加阴影
+   （否则会与内部子项的 hover 效果互相干扰） */
+[data-ui-style='neu'] .ant-layout-sider .ant-menu-inline .ant-menu-submenu-open > .ant-menu-submenu-title {
+  box-shadow: none;
+}
+
+/* [删除 2026-09-19] 此处原有一条「顶栏改极浅内阴影分界」的规则：
+     [data-ui-style='neu'] .ant-layout-header { box-shadow: inset 0 -1px 0 var(--line-softer); }
+   它与本文件上方新增的顶栏拟物规则**选择器权重完全相同**（属性选择器 + 类 = 0,2,0），
+   而 CSS 同权重时后出现的胜出 —— 导致上方的双层投影被这条 1px 内阴影静默覆盖，
+   顶栏看上去始终只有一条极淡的线（「改了没效果」的实际原因）。
+   该规则已被上方的拟物投影取代，整块删除。 */
+
+/* 内容区与页面底齐平，避免出现色块断层 */
+
+[data-ui-style='neu'] .ant-layout-content {
+  background: transparent;
+}
+
+/* ==================== 12. 院区管理（院区 / 楼栋 / 楼层 / 区域 四级级联） ==================== */
+/* [新增 2026-09-19] 四栏级联的拟物化。
+   原先条目只有一层浅青底、且 hover 与选中态同色，四栏并排时整块区域偏平，
+   层级与状态都难以分辨。现按拟物语言表达「可点实体 → 点击下沉」：
+     · 列表区作为**凹陷槽**：内容"嵌"在卡片里，与卡片本身形成内外层次；
+     · 每个条目是**凸起小卡片**：明确"这是可点的"；
+     · hover 进一步抬起（raised-sm），选中则转为**凹陷**（inset）——
+       两者方向相反，一眼能分辨"鼠标悬停"与"当前选中"；
+     · 已禁用条目压平（无阴影 + 透明底），与可选条目自然区分。 */
+
+/* 列表区：凹陷槽 */
+[data-ui-style='neu'] .campus-cascade__list {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-xs);
+  border-radius: var(--radius-control);
+  padding: 8px;
+  margin: 0;
+}
+
+/* 条目：凸起小卡片 */
+[data-ui-style='neu'] .cascade-item {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+[data-ui-style='neu'] .cascade-item:hover {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-sm);
+}
+/* 选中：被按下（凹陷），与 hover 的抬起方向相反 */
+[data-ui-style='neu'] .cascade-item.is-selected {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-inset-xs);
+}
+/* 选中态的品牌色竖条随内边距右移，避免贴住凹陷边缘 */
+[data-ui-style='neu'] .cascade-item.is-selected::before {
+  left: 4px;
+  height: 20px;
+}
+/* 已禁用条目：压平，不参与凸起 */
+[data-ui-style='neu'] .cascade-item.is-inactive {
+  box-shadow: none;
+  background: transparent;
+}
+
+/* 栏头「新增」按钮：hover 轻微凸起，与全局按钮语言一致 */
+[data-ui-style='neu'] .campus-cascade__head-extra .ant-btn:hover:not(:disabled) {
+  background: var(--neu-bg);
+  box-shadow: var(--neu-raised-xs);
+}
+
+/* ==================== 13. 统一高度与行高标准 ==================== */
+/* [统一方案 2026-09-19] 把此前散落各页的高度收敛为一套固定值。
+   antd 的表格行高默认随内容浮动 —— 同样两行内容，在不同页面可能因为
+   字号/行高的细微差别而高低不一，这是"不同页面间样式差异"的常见来源。
+   现统一为：
+     表头 44px · 数据行 48px（可容纳「日期 + 人名」两行小字）· 分页 48px。
+   vertical-align: middle 保证多行与单行单元格的基线一致。 */
+
+[data-ui-style='neu'] .ant-table-thead > tr > th {
+  height: 44px;
+}
+[data-ui-style='neu'] .ant-table-tbody > tr > td {
+  height: 48px;
+  vertical-align: middle;
+}
+/* 紧凑尺寸（size="small"）的表格：行高按比例收紧，避免密集列表过高 */
+[data-ui-style='neu'] .ant-table-small .ant-table-tbody > tr > td {
+  height: 40px;
+}
+[data-ui-style='neu'] .ant-table-small .ant-table-thead > tr > th {
+  height: 38px;
+}
+/* 分页区统一高度，避免不同页面的分页器上下留白不一致 */
+[data-ui-style='neu'] .ant-pagination {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+/* 移动端抽屉：凸起面板 + 大圆角 */
+[data-ui-style='neu'] .ant-drawer-content {
+  box-shadow: var(--neu-raised-lg) !important;
+}
+[data-ui-style='neu'] .ant-drawer-header {
+  border-bottom: 1px solid var(--line-softer);
+}
+
+/* 底部版本号链接：弱化，悬停转品牌色 */
+[data-ui-style='neu'] .version-link {
+  color: var(--text-3);
+  transition: color var(--ease-neu);
+}
+[data-ui-style='neu'] .version-link:hover {
+  color: var(--accent);
+}
+
+/* ==================== 12. 滚动条：凹陷轨道 + 凸起滑块 ==================== */
+/**
+ * [新增 2026-09-19] 让滚动条与新拟物语言保持一致：
+ *   轨道 = 凹陷（与页面底同色 + 内阴影，视觉上「嵌入」表面）；
+ *   滑块 = 凸起（底色同色相加深 + 双向阴影 + 全圆角）；
+ *   拖拽 = 品牌色（呼应「主操作用彩色凸起」的规范）。
+ *
+ * 覆盖范围：页面主滚动条（html 自身）与**所有后代滚动容器**
+ * （表格横向滚动、抽屉、弹窗、下拉、富文本编辑区等）——
+ * ::-webkit-scrollbar 是元素级伪元素，故用后代选择器一次覆盖，
+ * 无需逐个容器声明。
+ *
+ * 浏览器差异：
+ *   Chromium / Safari → ::-webkit-scrollbar 系列，支持完整造型；
+ *   Firefox          → 仅支持 scrollbar-width / scrollbar-color（着色，造型有限）。
+ * 经典模式不接管（沿用系统原生滚动条），保证可回退。
+ */
+
+/* ---------- Chromium / Safari ---------- */
+[data-ui-style='neu']::-webkit-scrollbar,
+[data-ui-style='neu'] ::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+[data-ui-style='neu']::-webkit-scrollbar-track,
+[data-ui-style='neu'] ::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  /* 凹陷表达；若浏览器不支持该伪元素上的阴影，则降级为纯色轨道 */
+  box-shadow: var(--neu-inset-xs);
+  border-radius: 999px;
+}
+
+[data-ui-style='neu']::-webkit-scrollbar-thumb,
+[data-ui-style='neu'] ::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  /* 透明边框 + content-box 裁切：在滑块与轨道之间留出呼吸间隙，
+     比铺满更贴近新拟物的柔和观感 */
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+  box-shadow: var(--neu-raised-xs);
+  transition: background-color var(--ease-neu);
+}
+
+[data-ui-style='neu']::-webkit-scrollbar-thumb:hover,
+[data-ui-style='neu'] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+[data-ui-style='neu']::-webkit-scrollbar-thumb:active,
+[data-ui-style='neu'] ::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+}
+
+/* 横竖滚动条的交点：透明，避免出现突兀的实心方块 */
+[data-ui-style='neu']::-webkit-scrollbar-corner,
+[data-ui-style='neu'] ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- Firefox ---------- */
+/* scrollbar-color 会沿继承树生效，故在根属性上设置一次即可覆盖全站滚动容器 */
+[data-ui-style='neu'] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* ==================== 13. 无障碍：减少动效偏好 ==================== */
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-style='neu'] .ant-btn,
+  [data-ui-style='neu'] .ant-card,
+  [data-ui-style='neu'] .ant-pagination .ant-pagination-item {
+    transition: none;
+  }
+  [data-ui-style='neu'] .ant-btn-primary:hover,
+  [data-ui-style='neu'] .ant-btn-default:hover,
+  [data-ui-style='neu'] .ant-pagination .ant-pagination-item:hover {
+    transform: none;
+  }
+}

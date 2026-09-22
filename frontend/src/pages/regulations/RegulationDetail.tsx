@@ -57,7 +57,7 @@ const RegulationDetail: React.FC = () => {
   }, [id]);
 
   if (loading) return <div style={{ textAlign: 'center', padding: 48 }}><Spin size="large" /></div>;
-  if (!data) return <div style={{ textAlign: 'center', padding: 48, color: '#999' }}>制度不存在</div>;
+  if (!data) return <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-3)' }}>制度不存在</div>;
 
   return (
     <PageContainer maxWidth={960}>
@@ -138,7 +138,7 @@ const RegulationDetail: React.FC = () => {
             <RichTextContent
               className="regulation-content"
               html={historyDetail.content || '暂无内容'}
-              style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: 16, background: '#fafafa' }}
+              style={{ border: '1px solid var(--line-soft)', borderRadius: 6, padding: 16, background: 'var(--neu-page-bg)' }}
             />
           </div>
         )}
@@ -147,8 +147,8 @@ const RegulationDetail: React.FC = () => {
       <style>{`
         .regulation-content img { max-width: 100%; height: auto; margin: 8px 0; }
         .regulation-content table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-        .regulation-content table td, .regulation-content table th { border: 1px solid #e5e7eb; padding: 8px 12px; }
-        .regulation-content table th { background-color: #f9fafb; font-weight: 500; }
+        .regulation-content table td, .regulation-content table th { border: 1px solid var(--line-soft); padding: 8px 12px; }
+        .regulation-content table th { background-color: var(--neu-page-bg); font-weight: 500; }
         .regulation-content p { margin: 8px 0; }
         .regulation-content h1,.regulation-content h2,.regulation-content h3,.regulation-content h4,.regulation-content h5,.regulation-content h6 { margin: 16px 0 8px; font-weight: 600; }
         .regulation-content ul,.regulation-content ol { margin: 8px 0; padding-left: 24px; }

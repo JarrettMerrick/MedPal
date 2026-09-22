@@ -69,11 +69,18 @@ def init_default_roles(db: Session):
         ("signage.inspection", "标识巡检", "signage_workspace", "提交巡检结果与现场照片"),
         ("signage.export", "标识导入导出", "signage_workspace", "导出标识台账/附件压缩包，批量导入标识"),
         ("signage.repair", "查看维修记录", "signage_workspace", "查看全部标识维修记录并按条件导出"),
+        # [新增 2026-09-18] 标识总览：默认仅科室管理员与超级管理员拥有（普通员工不含）
+        ("signage.overview", "标识总览", "signage_workspace", "查看标识总览的统计看板（KPI、分布图、趋势与最近动态）"),
         # 标识设置（settings）
         ("signage.floorplan", "平面设置", "signage_settings", "管理平面图底图（新增/删除/上传图片）"),
         ("signage.campus", "院区管理", "signage_settings", "维护院区/楼栋/楼层/区域数据"),
         ("signage.category", "标识分类设置", "signage_settings", "维护标识分类（名称/编码/颜色/形状/巡检周期）"),
         ("signage.supplier", "供应商设置", "signage_settings", "维护供应商信息"),
+        # [新增 2026-09-17] 文件库（设计文件集中管理：分类 / 标签 / 版本 / 回收站 / 标准设计文件）
+        ("file.view", "查看文件库", "file_library", "浏览、预览、下载设计文件"),
+        ("file.upload", "上传文件", "file_library", "向文件库上传设计文件"),
+        ("file.edit", "编辑文件", "file_library", "重命名、改分类、打标签、标记标准设计文件，并维护分类与标签"),
+        ("file.delete", "删除文件", "file_library", "删除文件（含批量、回收站恢复与彻底删除）"),
         # 用户管理
         ("user.view", "查看用户", "user", "查看用户列表"),
         ("user.create", "新增用户", "user", "新增用户账号"),
@@ -157,6 +164,8 @@ def init_default_roles(db: Session):
         perm_map["regulation.view"],
         # [调整 2026-09-15] 保留「查看标识」与「标识巡检」两种基础能力，其余标识权限收回
         perm_map["signage.view"], perm_map["signage.inspection"],
+        # [新增 2026-09-18] 标识总览：需求为默认只给科室管理员与超级管理员
+        perm_map["signage.overview"],
         # [新增 2026-09-10] 账号审核（本科室注册申请）
         perm_map["user.approve"],
         # [新增 2026-09-11] 站内信查看（私发/群发仅超管）
@@ -254,10 +263,17 @@ def _add_new_permissions(db: Session):
         ("signage.inspection", "标识巡检", "signage_workspace", "提交巡检结果与现场照片"),
         ("signage.export", "标识导入导出", "signage_workspace", "导出标识台账/附件压缩包，批量导入标识"),
         ("signage.repair", "查看维修记录", "signage_workspace", "查看全部标识维修记录并按条件导出"),
+        # [新增 2026-09-18] 标识总览（存量库增量补齐）；存量角色授权回填见下方 1.6 段
+        ("signage.overview", "标识总览", "signage_workspace", "查看标识总览的统计看板（KPI、分布图、趋势与最近动态）"),
         ("signage.floorplan", "平面设置", "signage_settings", "管理平面图底图（新增/删除/上传图片）"),
         ("signage.campus", "院区管理", "signage_settings", "维护院区/楼栋/楼层/区域数据"),
         ("signage.category", "标识分类设置", "signage_settings", "维护标识分类（名称/编码/颜色/形状/巡检周期）"),
         ("signage.supplier", "供应商设置", "signage_settings", "维护供应商信息"),
+        # [新增 2026-09-17] 文件库（存量库增量补齐）
+        ("file.view", "查看文件库", "file_library", "浏览、预览、下载设计文件"),
+        ("file.upload", "上传文件", "file_library", "向文件库上传设计文件"),
+        ("file.edit", "编辑文件", "file_library", "重命名、改分类、打标签、标记标准设计文件，并维护分类与标签"),
+        ("file.delete", "删除文件", "file_library", "删除文件（含批量、回收站恢复与彻底删除）"),
         # 用户管理（如有缺失）
         ("user.view", "查看用户", "user", "查看用户列表"),
         ("user.create", "新增用户", "user", "新增用户账号"),
@@ -277,6 +293,7 @@ def _add_new_permissions(db: Session):
     ]
 
     perm_map = {}
+    new_perm_names: list[str] = []
     for name, display_name, category, description in new_perms:
         existing = db.query(Permission).filter(Permission.name == name).first()
         if not existing:
@@ -284,7 +301,13 @@ def _add_new_permissions(db: Session):
             db.add(p)
             db.flush()
             perm_map[name] = p
-            logger.info(f"新增权限: {name}")
+            # [修正 2026-09-19] 原先在循环内逐条打 INFO（一次权限升级可刷十余行），
+            # 按规范「禁止在循环中打 INFO」改为累积后循环外汇总一条，
+            # 避免关键启动信息被逐条明细挤出视野。
+            new_perm_names.append(name)
+
+    if new_perm_names:
+        logger.info("新增权限 %d 个: %s", len(new_perm_names), new_perm_names)
 
     # 1.5 [修复 2026-09-07] 存量分类迁移：旧 signage 分类按新口径拆分到「标识平面/标识设置」
     legacy_category_map = {
@@ -328,6 +351,11 @@ def _add_new_permissions(db: Session):
         if owned & {"signage.create", "signage.edit", "signage.delete"}:
             to_grant.update({"signage.category", "signage.supplier"})
         # [调整 2026-09-15] 不再自动授予 signage.campus（原因见上方说明）
+        # [新增 2026-09-18] 标识总览：默认授予**科室管理员**（超管由下方第 2 段补齐全部权限）。
+        # 仅在权限**首次创建**时补授一次（perm_map 是本次新建权限的集合）：
+        # 若每次启动都强制补回，管理员在「角色管理」中回收该权限后会被重启悄悄恢复。
+        if role.name == "dept_manager" and "signage.overview" in perm_map:
+            to_grant.add("signage.overview")
         granted = 0
         for pname in to_grant:
             perm = db.query(Permission).filter(Permission.name == pname).first()
@@ -616,8 +644,11 @@ def _validate_all_user_roles(db: Session):
                     u.role_id = correct_role.id
                 fixed_count += 1
             else:
-                # 既不是有效值也不是已知旧版值 — 发出警告但保持原样
-                logger.error(
+                # 既不是有效值也不是已知旧版值 — 保持原样，仅计数
+                # [修正 2026-09-19] 原为循环内 logger.error（逐用户一条）。
+                # 按规范「禁止在循环中打 ERROR」+「同一问题只记录一次」，
+                # 改为循环内 DEBUG 记录明细、循环外按总数汇总一条 WARN。
+                logger.debug(
                     "发现孤立角色名: employee_id=%s, role='%s'（不在 roles 表中）",
                     u.employee_id, u.role,
                 )
@@ -627,7 +658,10 @@ def _validate_all_user_roles(db: Session):
         db.flush()
         logger.info("已自动修正 %d 个用户的角色名", fixed_count)
     if orphan_count > 0:
-        logger.error(
+        # [修正 2026-09-19] ERROR → WARN：这是**脏数据自愈流程的输出**（启动时扫描发现），
+        # 不是程序启动失败或核心组件故障，且不会自行扩散；打 ERROR 会在每次启动时
+        # 触发告警。保留醒目文案，但降级避免告警噪音。
+        logger.warning(
             "发现 %d 个用户使用了数据库中不存在的角色名，这些用户将没有任何权限！"
             "请立即通过管理界面修正这些用户的角色。", orphan_count,
         )
@@ -647,4 +681,7 @@ def sync_valid_role_names(db: Session) -> None:
     from app.models.user import set_valid_role_names
     valid_names = {r.name for r in db.query(Role).all()}
     set_valid_role_names(valid_names)
-    logger.info("已同步 %d 个有效角色名到 ORM 校验器: %s", len(valid_names), sorted(valid_names))
+    # [修正 2026-09-19] INFO → DEBUG：本函数在每次新建/修改用户与角色时都会被调用，
+    # 属高频内部同步动作，且角色名清单较长（会独占一整行）。
+    # 排查时如需确认同步结果，把日志级别调到 DEBUG 即可。
+    logger.debug("已同步 %d 个有效角色名到 ORM 校验器: %s", len(valid_names), sorted(valid_names))

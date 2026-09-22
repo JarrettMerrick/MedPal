@@ -5,9 +5,63 @@
 院区-楼栋-楼层-区域 数据模式定义
 """
 
+import re
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# ==================== 楼层号规范 ====================
+# [新增 2026-09-17] 楼层号由纯整数改为「字母前缀 + 数字」，支持字母编号：
+#   地上 F1 / F2 / F3 …（F3 = 三层）
+#   地下 B1 / B2 / B3 …（B1 = 地下一层）
+# 输入兼容旧习惯写法（3 → F3、-1 → B1、f03 → F3），入库统一为规范值。
+# 排序语义见 services/campus_service.floor_order_expr()（B 系列在前、越深越靠前）；
+# 前端同一口径实现：frontend/src/utils/floor.ts
+FLOOR_NUMBER_PATTERN = re.compile(r"^[BF][1-9]\d{0,2}$")
+FLOOR_NUMBER_HINT = "楼层号格式：地上 F+层数（如 F3＝三层），地下 B+深度（如 B1＝地下一层）"
+
+
+def normalize_floor_number(value) -> Optional[str]:
+    """把多种输入写法规范化为标准楼层号；无法识别返回 None。
+
+    与前端 utils/floor.ts 的 normalizeFloorNumber 保持同一口径：
+    - 纯数字 / 负数：3 → F3，-1 → B1（0 不合法）
+    - 带前缀且含多余前导零：F03 → F3、b1 → B1
+    """
+    if value is None:
+        return None
+    text = str(value).strip().upper().replace(" ", "")
+    if not text:
+        return None
+    # 旧习惯：直接输入数字（3 = 三层），负数表示地下（-1 = 地下一层）
+    if re.fullmatch(r"-?\d+", text):
+        n = int(text)
+        if n == 0 or abs(n) > 999:
+            return None
+        return f"{'B' if n < 0 else 'F'}{abs(n)}"
+    matched = re.fullmatch(r"([BF])0*(\d+)", text)
+    if matched:
+        n = int(matched.group(2))
+        if 1 <= n <= 999:
+            return f"{matched.group(1)}{n}"
+    return None
+
+
+def coerce_floor_number_input(value):
+    """[新增 2026-09-17] 入参类型兼容：把整数楼层号转成字符串，交给规范化函数处理。
+
+    字段类型已由 int 改为 str，但以下来源仍可能传数字（Pydantic 的 str 类型
+    会在校验阶段直接拒绝 int，导致兼容逻辑没有机会执行）：
+      - 浏览器缓存的旧版前端（InputNumber 提交数字）
+      - 运维/第三方脚本直接调用 API
+    统一在此转换为字符串（3 → "3" → 后续规范化为 F3），避免 422。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return str(int(value))
+    return value
 
 
 # ==================== 院区 ====================
@@ -92,10 +146,29 @@ class BuildingOut(BuildingBase):
 
 class FloorBase(BaseModel):
     """楼层基础信息"""
-    floor_number: int = Field(..., description="楼层号")
+    # [调整 2026-09-17] 由 int 改为 str：支持 B1（地下一层）/ F3（三层）等字母编号
+    floor_number: str = Field(
+        ..., max_length=20,
+        description="楼层号：地上 F1/F2…（F3 = 三层）、地下 B1/B2…（B1 = 地下一层）",
+    )
     floor_name: Optional[str] = Field(None, max_length=100, description="楼层名称")
     description: Optional[str] = Field(None, description="楼层描述")
     is_active: bool = Field(True, description="是否启用")
+
+    @field_validator("floor_number", mode="before")
+    @classmethod
+    def _coerce_floor_number(cls, v):
+        """[新增 2026-09-17] 入参兼容：数字 → 字符串（旧客户端 / 脚本调用）"""
+        return coerce_floor_number_input(v)
+
+    @field_validator("floor_number")
+    @classmethod
+    def _validate_floor_number(cls, v: str) -> str:
+        """[新增 2026-09-17] 校验并规范化楼层号（3 → F3、-1 → B1、f03 → F3）"""
+        normalized = normalize_floor_number(v)
+        if not normalized:
+            raise ValueError(FLOOR_NUMBER_HINT)
+        return normalized
 
 
 class FloorCreate(FloorBase):
@@ -106,10 +179,31 @@ class FloorCreate(FloorBase):
 class FloorUpdate(BaseModel):
     """更新楼层"""
     building_id: Optional[int] = Field(None, description="所属楼栋ID")
-    floor_number: Optional[int] = Field(None, description="楼层号")
+    # [调整 2026-09-17] 由 int 改为 str：支持字母编号（同 FloorBase）
+    floor_number: Optional[str] = Field(
+        None, max_length=20,
+        description="楼层号：地上 F1/F2…（F3 = 三层）、地下 B1/B2…（B1 = 地下一层）",
+    )
     floor_name: Optional[str] = Field(None, max_length=100, description="楼层名称")
     description: Optional[str] = Field(None, description="楼层描述")
     is_active: Optional[bool] = Field(None, description="是否启用")
+
+    @field_validator("floor_number", mode="before")
+    @classmethod
+    def _coerce_floor_number(cls, v):
+        """[新增 2026-09-17] 入参兼容：数字 → 字符串（旧客户端 / 脚本调用）"""
+        return coerce_floor_number_input(v)
+
+    @field_validator("floor_number")
+    @classmethod
+    def _validate_floor_number(cls, v):
+        """[新增 2026-09-17] 更新时同样规范化楼层号；未传（None）表示不修改该字段"""
+        if v is None:
+            return v
+        normalized = normalize_floor_number(v)
+        if not normalized:
+            raise ValueError(FLOOR_NUMBER_HINT)
+        return normalized
 
 
 class FloorOut(FloorBase):
@@ -191,7 +285,8 @@ class BuildingTreeNode(BaseModel):
 class FloorTreeNode(BaseModel):
     """楼层树形结构节点"""
     id: int = Field(..., description="楼层ID")
-    floor_number: int = Field(..., description="楼层号")
+    # [调整 2026-09-17] 与 FloorBase 保持一致，改为字母编号字符串
+    floor_number: str = Field(..., description="楼层号：F1/F2…（地上）、B1/B2…（地下）")
     floor_name: Optional[str] = Field(None, description="楼层名称")
     children: List["AreaTreeNode"] = Field(default_factory=list, description="区域列表")
 

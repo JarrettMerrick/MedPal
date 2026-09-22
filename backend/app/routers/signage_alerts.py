@@ -1,9 +1,11 @@
-# [重构 2026-09-05] 标识预警路由：
-# - 删除「质保即将到期」「已过质保期」
-# - 新增「状态异常标识」
-# - 巡检预警按分类巡检周期计算，分为「7天内到期」「已超期」
-# - 新增「临时标识有效期」预警（基于 validity_until）
-# [新增 2026-09-08] 预警处理：维修流程（发起维修/维修处理中/完成维修）与巡检临期跳转
+# [调整 2026-09-17] 本模块原为「标识预警」：预警汇总、状态异常、巡检临期/超期、
+# 临时标识有效期、维修流程。按需求「标识预警功能删除」后：
+#   - 预警类接口（/summary、/abnormal-status、/inspection/*、/validity/expiring、
+#     /repairs/in-progress）全部下线，其能力由「标识维修」页（/api/signage-repairs）
+#     的「待维修 / 维修处理中」行替代；
+#   - 保留维修流程（发起维修 / 上传照片 / 完成维修）与按标识查询维修记录，
+#     以及标识标记页所需的异常标识清单（/alerted-signage-ids）。
+# 文件保留原路径与路由前缀，避免影响前端既有调用与部署配置。
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -18,16 +20,22 @@ from app.database import get_db
 from app.config import settings
 # [修复 2026-09-07] 预警接口改用 signage.alert（标识平面 - 查看标识预警）
 # [新增 2026-09-09] 维修记录查询接口供详情页使用，与巡检历史一致采用标识查看权限 PERM_SIGNAGE_VIEW
-from app.dependencies import get_current_user, has_permission, PERM_SIGNAGE_ALERT, PERM_SIGNAGE_VIEW
+from app.dependencies import (
+    get_current_user, has_permission, require_any_permission,
+    PERM_SIGNAGE_ALERT, PERM_SIGNAGE_VIEW,
+    # [修复 2026-09-17] 维修记录查询补科室数据范围校验
+    check_signage_department_access,
+)
 from app.models.user import User
 from app.services.signage_alert_service import (
-    get_abnormal_status, get_inspections_due_soon, get_inspections_overdue,
-    get_expiring_validity, get_all_alerts,
-    # [新增 2026-09-14] 预警标识全量清单（供标识标记页高亮预警标识）
+    # [新增 2026-09-14] 异常标识全量清单（供标识标记页把异常标识高亮显示）
     get_alerted_signage_map,
     # [新增 2026-09-08] 维修流程服务；[新增 2026-09-09] 按标识查询维修记录
-    get_repairs_in_progress, start_repair, complete_repair, get_repairs_by_signage,
+    start_repair, complete_repair, get_repairs_by_signage,
 )
+# [删除 2026-09-17] 不再引入预警专用查询（get_all_alerts / abnormal_status /
+# inspections_due_soon / inspections_overdue / expiring_validity / repairs_in_progress）：
+# 相关路由已随「标识预警」页下线，计算逻辑仍由「标识总览」在服务层直接调用。
 # [新增 2026-09-08] 维修完成照片上传：复用图片校验与落盘逻辑（与巡检照片一致）
 # [新增 2026-09-09] 维修流程审计留痕 + 统一 IP 获取
 from app.utils import utc_now, get_client_ip
@@ -36,10 +44,15 @@ from app.services.audit_service import record_audit
 from app.services.modification_notify import notify_super_admins
 from app.models.signage import Signage
 from app.services.upload_service import (
+    # [重构 2026-09-21 / Q-7] 照片的校验与保存统一走公共实现
+    save_validated_photo,
     validate_image_file, detect_image_format, MAX_FILE_SIZE, UPLOAD_ROOT,
+    generate_thumbnail,
 )
 
-router = APIRouter(prefix="/api/signage-alerts", tags=["标识预警"])
+# [调整 2026-09-17] 路由前缀保持不变（前端维修操作接口依赖，改动会破坏兼容），
+# 仅更新分组标签：本模块现只承载「标识维修」流程与异常标识清单
+router = APIRouter(prefix="/api/signage-alerts", tags=["标识维修"])
 
 # [新增 2026-09-15] 维修方式中文映射（用于站内信摘要）
 _REPAIR_PARTY_LABELS = {"vendor": "供应商维修", "engineering": "工程部维修"}
@@ -65,33 +78,26 @@ def _notify_alert_change(db: Session, current_user: User, rec, summary: str) -> 
             context={"操作人": operator_name, "标识": code, "变更内容": summary},
         )
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」，
+        # 与 data_io.py 同一形态（2026-09-19 静默异常治理遗漏的写法）。
+        # 这里吞掉的是**报修通知的写入失败**：通知发不出去不影响报修本身，
+        # 但完全没有痕迹会导致事后无法回答"这条报修到底通知出去了没有"。
+        logger.warning(
+            "标识报修通知写入失败（已回滚，不影响报修本身）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
 
 
 def _save_repair_photo(file: UploadFile) -> str:
-    """[新增 2026-09-08] 校验并保存维修完成照片，返回相对路径（如 repair/xxx.jpg）"""
-    validate_image_file(file)
-    content = file.file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件大小超过限制，最大允许 {settings.upload_max_size_mb}MB",
-        )
-    real_format = detect_image_format(content)
-    if real_format not in ("JPEG", "PNG", "WebP"):
-        raise HTTPException(status_code=400, detail="仅支持 JPG/PNG/WebP 格式")
-    ext = {"JPEG": ".jpg", "PNG": ".png", "WebP": ".webp"}[real_format]
-    dir_path = os.path.join(UPLOAD_ROOT, "repair")
-    os.makedirs(dir_path, exist_ok=True)
-    filename = f"repair_{utc_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
-    with open(os.path.join(dir_path, filename), "wb") as f:
-        f.write(content)
-    # 路径穿越防护：assert 解析后仍位于上传根目录内
-    real_root = os.path.realpath(UPLOAD_ROOT)
-    real_abs = os.path.realpath(os.path.join(dir_path, filename))
-    if real_abs != real_root and not real_abs.startswith(real_root + os.sep):
-        raise HTTPException(status_code=400, detail="非法文件路径")
+    """校验并保存维修完成照片，返回相对路径（如 repair/xxx.jpg）。
+
+    [重构 2026-09-21 / 代码质量审计 Q-7] 原实现与巡检照片保存（signage_inspections）
+    逐行重复约 30 行，现统一改为调用公共实现 save_validated_photo。
+    保留本函数名以不触动既有调用点；文件名规则（repair_时间_随机.ext）与原实现一致。
+    """
+    return save_validated_photo(file, subdir="repair")
     return f"repair/{filename}"
 
 
@@ -111,11 +117,8 @@ class RepairCompleteRequest(BaseModel):
     photo: Optional[str] = None
 
 
-@router.get("/summary")
-def alert_summary(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    return get_all_alerts(db)
+# [删除 2026-09-17] GET /summary（预警汇总）随「标识预警」页一并下线：
+# 状态异常标识改由「标识维修」列表（待维修行）统一展示与处理。
 
 
 @router.get("/alerted-signage-ids")
@@ -132,85 +135,42 @@ def alerted_signage_ids(current_user: User = Depends(get_current_user), db: Sess
     return {"items": [{"id": sid, "alerts": labels} for sid, labels in mapping.items()]}
 
 
-@router.get("/abnormal-status")
-def abnormal_status_alerts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """[新增 2026-09-05] 状态异常标识（轻微破损/严重损坏）"""
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    items = get_abnormal_status(db)
-    return [{"id": s.id, "code": s.code, "name": s.name, "status": s.status} for s in items]
-
-
-@router.get("/inspection/due-soon")
-def inspection_due_soon(days_ahead: int = Query(7, ge=1), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """[新增 2026-09-05] 7天内巡检到期（按分类巡检周期计算）"""
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    items = get_inspections_due_soon(db, days_ahead)
-    return [{
-        "id": d["signage"].id, "code": d["signage"].code, "name": d["signage"].name,
-        "category": d["category"], "cycle_days": d["cycle_days"],
-        "last_inspection_date": str(d["last_inspection_date"]) if d["last_inspection_date"] else None,
-        "due_date": str(d["due_date"]), "days_left": d["days_left"],
-    } for d in items]
-
-
-@router.get("/inspection/overdue")
-def inspection_overdue(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """[新增 2026-09-05] 巡检已超期（按分类巡检周期计算）"""
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    items = get_inspections_overdue(db)
-    return [{
-        "id": d["signage"].id, "code": d["signage"].code, "name": d["signage"].name,
-        "category": d["category"], "cycle_days": d["cycle_days"],
-        "last_inspection_date": str(d["last_inspection_date"]) if d["last_inspection_date"] else None,
-        "due_date": str(d["due_date"]), "days_overdue": -d["days_left"],
-    } for d in items]
-
-
-@router.get("/validity/expiring")
-def validity_expiring(days_ahead: int = Query(7, ge=1), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """[新增 2026-09-05] 临时标识有效期预警（含已过期）"""
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    items = get_expiring_validity(db, days_ahead)
-    return [{"id": s.id, "code": s.code, "name": s.name, "validity_until": str(s.validity_until)} for s in items]
+# [删除 2026-09-17] 以下「标识预警」专用接口随预警页一并下线：
+#   GET /abnormal-status（状态异常清单）        → 由「标识维修」列表的「待维修」行替代
+#   GET /inspection/due-soon、/inspection/overdue（巡检临期 / 超期）
+#   GET /validity/expiring（临时标识有效期提醒）
+#   GET /repairs/in-progress（维修处理中清单）  → 由「标识维修」列表的「维修处理中」行替代
+# 预警计算逻辑（signage_alert_service）仍被「标识总览」复用，故保留在服务层。
 
 
 # ============================================================
-# [新增 2026-09-08] 预警处理：维修流程
-#   状态异常 --发起维修--> 维修处理中 --完成维修(可选上传照片)--> 正常
+# 维修流程（保留）：标识报修 与 维修记录查询
+#   轻微破损/严重损坏 --发起维修--> 维修处理中 --完成维修(可选上传照片)--> 正常
 # ============================================================
-@router.get("/repairs/in-progress")
-def repairs_in_progress(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """维修处理中的预警列表（未完成的维修记录）"""
-    if not has_permission(current_user, PERM_SIGNAGE_ALERT):
-        raise HTTPException(status_code=403, detail="权限不足")
-    rows = get_repairs_in_progress(db)
-    from app.utils import to_iso_utc
-    return [{
-        "id": r.id, "signage_id": s.id, "code": s.code, "name": s.name,
-        "repair_party": r.repair_party, "supplier_name": r.supplier_name,
-        "oa_number": r.oa_number,
-        # [统一时间口径] 带 Z 的 UTC ISO，前端统一转本地时区
-        "started_at": to_iso_utc(r.started_at),
-    } for r, s in rows]
-
-
 @router.get("/repairs")
 def list_signage_repairs(
     signage_id: int = Query(..., description="标识ID"),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 权限检查由函数体改为依赖注入：
+    # 原先写在函数体内时，缺少 signage_id 参数会先触发 FastAPI 参数校验返回 422
+    # （参数校验先于函数体执行），外部观测如同"该路由没有权限校验"；
+    # 改为 Depends 后无权限请求直接 403，与同模块其它端点行为一致。
+    current_user: User = Depends(require_any_permission(PERM_SIGNAGE_VIEW)),
     db: Session = Depends(get_db),
 ):
     """[新增 2026-09-09] 查询指定标识的全部维修记录（含维修前/后照片路径）。
 
     供标识详情页「维修记录」弹窗调用。权限与「巡检历史」一致采用标识查看权限，
     保证能查看标识详情的用户均可查看该标识的维修记录。
+
+    [修复 2026-09-17] 补科室数据范围校验：原先仅校验 signage.view 权限点，
+    department_scope=own 的受限角色可通过遍历 signage_id 读取其他科室标识的
+    维修记录（含维修前后照片路径、供应商名称、OA 单号）。
     """
-    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
-        raise HTTPException(status_code=403, detail="权限不足")
+    s = db.query(Signage).filter(Signage.id == signage_id).first()
+    if not s:
+        # 保持原行为：标识不存在时返回空列表（前端弹窗展示为空）
+        return []
+    check_signage_department_access(db, current_user, s)
     return get_repairs_by_signage(db, signage_id)
 
 
@@ -234,7 +194,12 @@ def start_signage_repair(body: RepairStartRequest, request: Request = None, curr
                      detail=f"signage_id={rec.signage_id}, party={rec.repair_party}, supplier={rec.supplier_name or '-'}, oa={rec.oa_number or 'N/A'}",
                      target=str(rec.signage_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.alert_changed）
     if rec.repair_party == "vendor":
         _summary = f"发起维修（供应商: {rec.supplier_name or '未指定'}）"
@@ -270,7 +235,12 @@ async def upload_repair_photo(
         record_audit(db, "signage_repair_photo", current_user.employee_id,
                      detail=f"file={file.filename}", target=file_path, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return {"file_path": file_path}
 
 
@@ -293,7 +263,12 @@ def complete_signage_repair(repair_id: int, body: RepairCompleteRequest, request
                      detail=f"repair_id={repair_id}, signage_id={rec.signage_id}, photo={'有' if rec.repair_photo else '无'}",
                      target=str(rec.signage_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.alert_changed）
     _notify_alert_change(
         db, current_user, rec,

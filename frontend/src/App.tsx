@@ -13,6 +13,8 @@ import { ReviewBadgeProvider } from './contexts/ReviewBadgeContext';
 import { MessageUnreadProvider } from './contexts/MessageUnreadContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import RoleGuard from './components/RoleGuard';
+// [新增 2026-09-17] 功能开关路由守卫：单位级开关关闭后拦截页面直达（与左侧菜单同口径）
+import FeatureRouteGuard from './components/FeatureRouteGuard';
 import {
   PERM_USER_VIEW,
   PERM_DATA_EXPORT,
@@ -31,14 +33,18 @@ import {
   PERM_REGULATION_CREATE,
   PERM_REGULATION_EDIT,
   PERM_SIGNAGE_VIEW,
+  // [新增 2026-09-18] 标识总览独立权限（默认仅科室管理员/超管）
+  PERM_SIGNAGE_OVERVIEW,
   PERM_SIGNAGE_CREATE,
   PERM_SIGNAGE_EDIT,
   // [修复 2026-09-07] 标识细粒度权限：子页面路由守卫按「标识平面/标识设置」细分
   PERM_SIGNAGE_MARKER,
-  PERM_SIGNAGE_ALERT,
+  // [调整 2026-09-17] 移除 PERM_SIGNAGE_ALERT：「标识预警」页已下线
   PERM_SIGNAGE_INSPECTION,
   // [新增 2026-09-09] 维修记录（查看全部标识维修记录并导出）
   PERM_SIGNAGE_REPAIR,
+  // [新增 2026-09-17] 文件库（设计文件集中管理）
+  PERM_FILE_VIEW,
   PERM_SIGNAGE_FLOORPLAN,
   PERM_SIGNAGE_CAMPUS,
   PERM_SIGNAGE_CATEGORY,
@@ -83,10 +89,12 @@ import MarkerEditor from './pages/signages/MarkerEditor';
 import PlanSettings from './pages/signages/PlanSettings';
 import SignageHistoryPage from './pages/signages/SignageHistoryPage';
 import SignageMobile from './pages/signages/SignageMobile';
-import SignageAlerts from './pages/signages/SignageAlerts';
+// [删除 2026-09-17] 「标识预警」页已下线：状态异常标识与维修统一在「标识维修」页处理
 // [新增 2026-09-09] 标识总览页（点击「标识平面」进入）与维修记录页
 import SignageOverview from './pages/signages/SignageOverview';
 import RepairRecords from './pages/signages/RepairRecords';
+// [新增 2026-09-17] 文件管理（设计文件集中管理：检索 / 分类 / 标签 / 版本 / 标准设计文件）
+import DesignFileManager from './pages/files/DesignFileManager';
 import SignageExport from './pages/signages/SignageExport';
 import CampusManagement from './pages/campus/CampusManagement';
 // [修复 2026-09-04] 导入标识分类设置和供应商设置页面
@@ -114,6 +122,9 @@ const App: React.FC = () => {
             element={
               <ProtectedRoute>
                 <Layout>
+                  {/* [新增 2026-09-17] 功能开关路由守卫：被关闭的模块（标识平面/标识设置、制度牌、站内信）
+                      不可通过直接输入 URL 进入，与左侧菜单隐藏保持同一口径 */}
+                  <FeatureRouteGuard>
                   <Routes>
                     <Route path="/dashboard" element={<Dashboard />} />
                     {/* [新增 2026-09-11] 站内信（系统通知 + 群发/私发统一收件箱） */}
@@ -266,8 +277,10 @@ const App: React.FC = () => {
                     />
                     {/* [新增 2026-09-03] 标识管理路由 */}
                     <Route path="/signages" element={<SignageList />} />
-                    {/* [新增 2026-09-09] 标识总览（signage.view）与维修记录（signage.repair） */}
-                    <Route path="/signage-overview" element={<RoleGuard permissions={[PERM_SIGNAGE_VIEW]}><SignageOverview /></RoleGuard>} />
+                    {/* [新增 2026-09-09] 标识总览与维修记录（signage.repair） */}
+                    {/* [调整 2026-09-18] 总览门禁由 signage.view 改为独立的 signage.overview：
+                        默认仅科室管理员与超级管理员拥有，普通员工访问会被守卫弹回工作台 */}
+                    <Route path="/signage-overview" element={<RoleGuard permissions={[PERM_SIGNAGE_OVERVIEW]}><SignageOverview /></RoleGuard>} />
                     <Route path="/signage-repairs" element={<RoleGuard permissions={[PERM_SIGNAGE_REPAIR]}><RepairRecords /></RoleGuard>} />
                     <Route path="/signages/new" element={<RoleGuard permissions={[PERM_SIGNAGE_CREATE]}><SignageForm /></RoleGuard>} />
                     <Route path="/signages/:id" element={<SignageDetail />} />
@@ -279,8 +292,10 @@ const App: React.FC = () => {
                     {/* [修复 2026-09-07] 标识子页面路由守卫按细粒度权限拆分（标识平面/标识设置） */}
                     <Route path="/signage-floorplan" element={<RoleGuard permissions={[PERM_SIGNAGE_MARKER]}><MarkerEditor /></RoleGuard>} />
                     <Route path="/signage-mobile" element={<RoleGuard permissions={[PERM_SIGNAGE_INSPECTION]}><SignageMobile /></RoleGuard>} />
-                    <Route path="/signage-alerts" element={<RoleGuard permissions={[PERM_SIGNAGE_ALERT]}><SignageAlerts /></RoleGuard>} />
+                    {/* [删除 2026-09-17] /signage-alerts 路由已下线（预警页移除，能力并入「标识维修」） */}
                     <Route path="/signage-export" element={<SignageExport />} />
+                    {/* [新增 2026-09-17] 文件管理（文件库）：需 file.view 权限 */}
+                    <Route path="/design-files" element={<RoleGuard permissions={[PERM_FILE_VIEW]}><DesignFileManager /></RoleGuard>} />
                     {/* [修复 2026-09-03] 院区管理路由 */}
                     <Route path="/campus-management" element={<RoleGuard permissions={[PERM_SIGNAGE_CAMPUS]}><CampusManagement /></RoleGuard>} />
                     {/* [修复 2026-09-05] 平面设置路由（迁入标识设置菜单） */}
@@ -291,6 +306,7 @@ const App: React.FC = () => {
                     <Route path="/suppliers" element={<RoleGuard permissions={[PERM_SIGNAGE_SUPPLIER]}><SupplierSettings /></RoleGuard>} />
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </Routes>
+                  </FeatureRouteGuard>
                 </Layout>
               </ProtectedRoute>
             }

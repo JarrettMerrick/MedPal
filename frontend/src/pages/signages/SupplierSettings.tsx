@@ -1,7 +1,8 @@
 // [修复 2026-09-04] 供应商设置页面：维护制作厂商
 import React, { useState, useEffect } from 'react';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
-  Card, Table, Button, Space, Modal, Form, Input, Select, message,
+  App, Card, Table, Button, Space, Modal, Form, Input, Select,
   Popconfirm, Tag, Breadcrumb, Typography, Row, Col, Tabs, Switch
 } from 'antd';
 import {
@@ -20,6 +21,8 @@ const { Option } = Select;
 
 // [修复 2026-09-04] 供应商设置页面组件
 const SupplierSettings: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   // 状态管理
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(false);
@@ -51,39 +54,60 @@ const SupplierSettings: React.FC = () => {
   }, [searchText]);
 
   // [修复 2026-09-04] 表格列定义
+  // [调整 2026-09-19] 列宽按库中**实际数据长度**收敛，消除整表横向滚动：
+  //   实测 供应商名称 ≤12 字、联系人 3 字、电话 11 位、地址 ≤17 字、邮箱 19 字符，
+  //   各列据此给足固定宽度后，仅「地址」不设宽度吸收剩余空间 ——
+  //   表格总宽恒等于容器宽度，不再溢出产生横向滚动条。
+  //   「地址」同时去掉 ellipsis 并允许跨行：长地址换行完整展示，
+  //   而不是被截成省略号（原实现的主要问题）。
   const columns = [
     {
       title: '供应商名称',
       dataIndex: 'name',
       key: 'name',
+      // 固定 160px：最长 12 字（南通华宇标识制作有限公司）在此宽度内折为 2 行。
+      // （试过「不设宽度交给浏览器按内容比例分配」，结果是名称被更长的地址挤到 3 行，
+      //   不如给定宽稳定；地址列承载最长的内容，让它单独吃掉剩余空间更合理。）
+      width: 160,
       render: (text: string) => <Text strong>{text}</Text>,
     },
     {
       title: '联系人',
       dataIndex: 'contact_person',
       key: 'contact_person',
+      width: 72,
     },
     {
       title: '联系电话',
       dataIndex: 'phone',
       key: 'phone',
+      width: 112,
     },
     {
-      title: '地址',
+      title: '供应商地址',
       dataIndex: 'address',
       key: 'address',
-      ellipsis: true,
+      // 不设 width：作为最长文本列吸收全部剩余空间；允许跨行 + 兜底最小宽度
+      // （style 需断言为 CSSProperties，否则 'break-word' 会被推断为 string —— TS2322）
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 140 } as React.CSSProperties,
+      }),
     },
     {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
+      // 同样不设 width，与地址共享剩余空间；邮箱串本身不含空格，
+      // 必须靠 wordBreak 才能断行，否则会把列撑宽并顶出横向滚动条
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 120 } as React.CSSProperties,
+      }),
     },
     {
       title: '状态',
       dataIndex: 'is_active',
       key: 'is_active',
-      width: 80,
+      width: 64,
       render: (isActive: boolean) => (
         <Tag color={isActive ? 'green' : 'default'}>
           {isActive ? '启用' : '停用'}
@@ -94,14 +118,25 @@ const SupplierSettings: React.FC = () => {
       title: '更新时间',
       dataIndex: 'updated_at',
       key: 'updated_at',
-      width: 160,
+      width: 110,
       // [统一时间口径] 补 render：原实现直接输出后端 UTC 串，比北京时间少 8 小时
-      render: (v: string) => (v ? formatDateTimeStandard(v) : '-'),
+      // [调整 2026-09-19] 改为「日期 / 时间」两行展示：整串 19 字符放在窄列里会被
+      // 折成三行（2026- / 09-17 / 14:01:43），既难看又占高；两行展示省宽度也好读。
+      render: (v: string) => {
+        if (!v) return '-';
+        const [date, time] = formatDateTimeStandard(v).split(' ');
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{date}</div>
+            {time && <div style={{ fontSize: 12, opacity: 0.72 }}>{time}</div>}
+          </div>
+        );
+      },
     },
     {
       title: '操作',
       key: 'actions',
-      width: 120,
+      width: 100,
       render: (_: any, record: Supplier) => (
         <Space size="small">
           <Button

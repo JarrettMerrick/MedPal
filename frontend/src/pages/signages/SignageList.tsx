@@ -1,23 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Input, Select, Space, Tag, message, Popconfirm, Tooltip } from 'antd';
-import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, EyeOutlined, CopyOutlined } from '@ant-design/icons';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
+import { App, Table, Button, Input, Select, Space, Tag, Tooltip } from 'antd';
+// [调整 2026-09-17] 移除 EditOutlined / DeleteOutlined / Popconfirm：
+// 列表操作列只保留「查看」，编辑与删除入口分别由详情页、编辑页提供
+import { PlusOutlined, SearchOutlined, EyeOutlined, CopyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getSignageList, deleteSignage } from '../../api/signage';
+import { getSignageList } from '../../api/signage';
 import type { Signage } from '../../api/signage';
 import { getSignageCategories } from '../../api/signage-settings';
 import { campusApi } from '../../api/campus';
 import type { Campus, Building, Floor } from '../../types/campus';
-import { hasPermission, PERM_SIGNAGE_CREATE, PERM_SIGNAGE_EDIT, PERM_SIGNAGE_DELETE } from '../../utils/permissions';
+// [调整 2026-09-17] 列表只保留「新增标识」权限判断（signage.create）
+import { hasPermission, PERM_SIGNAGE_CREATE } from '../../utils/permissions';
 import { useAuth } from '../../contexts/AuthContext';
 // [修复 2026-09-09] 复用统一状态常量：此前私有 STATUS_MAP 缺 repair_in_progress，
 // 导致列表状态列显示英文原值、且状态筛选下拉缺少「维修处理中」
 import { SIGNAGE_STATUS_MAP, SIGNAGE_STATUS_OPTIONS } from '../../constants/signageStatus';
 // [新增 2026-09-14] 剪贴板复制（兼容院内网 http 访问环境）
 import { copyText } from '../../utils/clipboard';
+// [调整 2026-09-17] 楼层展示统一走 utils/floor（楼层号已为 F3/B1 字母编号）
+import { floorLabel } from '../../utils/floor';
 
 const { Option } = Select;
 
 const SignageList: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -95,16 +103,6 @@ const SignageList: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [page, pageSize, category, status, campus, building, floor]);
 
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteSignage(id);
-      message.success('删除成功');
-      fetchData();
-    } catch {
-      message.error('删除失败');
-    }
-  };
-
   /** [新增 2026-09-14] 一键复制标识编码：巡检/报修时需频繁转述编码，避免手动选中复制出错 */
   const handleCopyCode = async (code: string) => {
     const ok = await copyText(code);
@@ -131,7 +129,16 @@ const SignageList: React.FC = () => {
         </Space>
       ),
     },
-    { title: '名称', dataIndex: 'name', key: 'name', width: 200, ellipsis: true },
+    // [调整 2026-09-19] 「名称」去掉固定宽度与 ellipsis，改为自适应 + 允许换行。
+    // 本表原 8 列全部定宽（合计 958px），无列可伸缩 → 窄屏会横向滚动。
+    // 标识名称是全表最长的文本列，交由它吸收剩余空间；同时不再截断为省略号，
+    // 长名称完整折行展示（与「院区管理」等页面的处理口径一致）。
+    {
+      title: '名称', dataIndex: 'name', key: 'name',
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 160 } as React.CSSProperties,
+      }),
+    },
     { title: '分类', dataIndex: 'category', key: 'category', width: 100 },
     { title: '院区', dataIndex: 'campus', key: 'campus', width: 80 },
     // [显示 2026-09-03] 楼栋列显示"楼栋号-楼栋名称"，增加宽度
@@ -146,19 +153,12 @@ const SignageList: React.FC = () => {
       },
     },
     {
-      title: '操作', key: 'action', width: 180,
+      // [调整 2026-09-17] 操作列只保留「查看」：
+      //   - 「编辑」入口统一由标识详情页提供（查看 → 编辑），列表不再重复放置；
+      //   - 「删除」入口移至标识编辑页（查看 → 编辑 → 删除），避免在列表中误删。
+      title: '操作', key: 'action', width: 100,
       render: (_: unknown, record: Signage) => (
-        <Space>
-          <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/signages/${record.id}`)}>查看</Button>
-          {hasPermission(user, PERM_SIGNAGE_EDIT) && (
-            <Button size="small" icon={<EditOutlined />} onClick={() => navigate(`/signages/edit/${record.id}`)}>编辑</Button>
-          )}
-          {hasPermission(user, PERM_SIGNAGE_DELETE) && (
-            <Popconfirm title="确认删除?" onConfirm={() => handleDelete(record.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-            </Popconfirm>
-          )}
-        </Space>
+        <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/signages/${record.id}`)}>查看</Button>
       ),
     },
   ];
@@ -195,10 +195,12 @@ const SignageList: React.FC = () => {
             style={{ width: 150 }} value={floor}
             disabled={!building}
             onChange={(v) => { setFloor(v); setPage(1); }}
-            options={floorOptions.map((f) => ({
-              value: f.floor_name ? `${f.floor_number}F-${f.floor_name}` : `${f.floor_number}F`,
-              label: `${f.floor_number}F${f.floor_name ? `-${f.floor_name}` : ''}`,
-            }))}
+            options={floorOptions.map((f) => {
+              // [调整 2026-09-17] 选项值与展示统一为 floorLabel（如 F3-门诊层），
+              // 与标识存储的 floor 文本口径一致，避免筛选项与数据对不上
+              const label = floorLabel(f);
+              return { value: label, label };
+            })}
           />
           <Select placeholder="分类" allowClear style={{ width: 120 }} value={category} onChange={(v) => { setCategory(v); setPage(1); }}>
             {categoryOptions.map((c) => <Option key={c} value={c}>{c}</Option>)}

@@ -20,7 +20,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Row, Col, Card, Statistic, Button, Typography, message, Spin, theme, Flex } from 'antd';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
+import { App, Row, Col, Card, Statistic, Button, Typography, Spin, theme, Flex } from 'antd';
 import { TeamOutlined, UserOutlined, MobileOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import { getStaffList, getStaff } from '../api/staff';
@@ -36,6 +37,9 @@ import PageContainer from '../components/PageContainer';
 import PageHeader from '../components/PageHeader';
 // [新增 2026-09-10] 首页同时展示单位名称与系统名称
 import { useBranding } from '../contexts/BrandingContext';
+// [修复 2026-09-17] 功能开关：快捷卡片需与菜单同口径判断，
+// 避免「功能开关」关闭标识模块后，工作台仍残留「标识巡检」入口
+import { useFeatures } from '../contexts/FeaturesContext';
 
 const { Text } = Typography;
 const { useToken } = theme;
@@ -55,6 +59,10 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const branding = useBranding(); // [新增 2026-09-10] 品牌信息
+  // [修复 2026-09-17] 功能开关（单位级）：与左侧菜单同口径，开关关闭时隐藏对应快捷入口
+  const { isEnabled } = useFeatures();
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   const { token } = useToken();
   const [stats, setStats] = useState<Stats>({ totalStaff: 0 });
   const [statsLoading, setStatsLoading] = useState(true);
@@ -195,8 +203,13 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
 
-        {/* [新增 2026-09-08] 标识巡检快捷卡片：点击进入标识巡检页；仅对拥有巡检权限的用户显示 */}
-        {hasPermission(user, PERM_SIGNAGE_INSPECTION) && (
+        {/*
+          [新增 2026-09-08] 标识巡检快捷卡片：点击进入标识巡检页。
+          [修复 2026-09-17] 显示条件与左侧菜单保持一致：
+            ① 单位级「标识平面与标识设置」开关启用（原实现漏判 → 开关关闭后卡片仍显示）；
+            ② 该账号拥有标识巡检权限。
+        */}
+        {isEnabled('signage') && hasPermission(user, PERM_SIGNAGE_INSPECTION) && (
           <Col xs={24} md={12} lg={8} style={{ display: 'flex' }}>
             <Card
               hoverable

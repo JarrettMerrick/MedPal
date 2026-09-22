@@ -4,155 +4,241 @@
 /**
  * 业务背景说明
  * ============
- * 本文件为 Ant Design 5.x 全局主题配置文件，通过 ConfigProvider 注入整个应用。
+ * 本文件为 Ant Design 5.x 全局主题配置工厂，通过 ConfigProvider 注入整个应用。
  *
- * 设计原则（v1.1.0 UI 精致化，2026-08-07）：
- * - 主色由 #0052D9（数码品牌蓝）调整为 #0E7F8A（医疗青蓝），
- *   符合医院「信任、洁净、安宁」的气质，且相比纯蓝更现代
- * - 浅色轻盈侧边栏（siderBg #FFFFFF）+ 浅青胶囊选中态，告别传统深蓝后台模板
- * - 暖灰页面底 #F6F8FA、细边框 + 柔和分层阴影，提升卡片精致感
- * - 组件级 token 覆盖解决 Ant Design 默认样式与项目需求的差异
+ * [改造 2026-09-19] 由「静态 theme 对象」改为「getAntdTheme(options) 工厂函数」：
+ *   外观风格（新拟物 / 经典）与明暗模式（浅色 / 深色）由 UiPrefsContext 驱动，
+ *   本函数据此返回对应的 ThemeConfig，与 CSS 变量层（neu-tokens.css）**同步切换**。
+ *   若只改其一，会出现「组件样式变了、页面底色没变」的割裂，因此两者必须同源：
+ *   同一个 UiPrefs 状态既喂给本函数，又写入 <html> 属性。
  *
- * 数据流向：theme → ConfigProvider → 全应用生效
+ * 设计原则（v1.1.0 UI 精致化，2026-08-07；2026-09-19 追加拟物支持）：
+ * - 主色为 #0E7F8A（医疗青蓝），符合医院「信任、洁净、安宁」的气质；
+ *   深色下提亮为 #2FB3C0，保证在深底上的对比度（与 --accent 保持同值）。
+ * - 新拟物的成立前提是**表面与页面底同色**：拟物模式下 colorBgLayout 与
+ *   colorBgContainer 归一（浅色 #E8EBF2 / 深色 #262E33），
+ *   立体感全部交由 CSS 的双向柔和阴影表达（见 neumorphism.css）。
+ * - 经典模式保留改造前的取值（暖灰页底 + 白色容器 + 细边框），保证可回退。
+ *
+ * 数据流向：UiPrefsContext.state → getAntdTheme() → ConfigProvider → 全应用生效
  */
 
+import { theme as antdTheme } from 'antd';
 import type { ThemeConfig } from 'antd';
+import type { ColorMode, UiStyle } from '../contexts/UiPrefsContext';
 
-/** @constant Ant Design 5.x 全局主题配置 */
-const theme: ThemeConfig = {
-  token: {
-    // ========== 品牌主色（医疗青蓝体系） ==========
-    /** 主色 - 医疗青蓝 */
-    colorPrimary: '#0E7F8A',
-    /** 主色悬浮态 */
-    colorPrimaryHover: '#1B8E99',
-    /** 主色按下态 */
-    colorPrimaryActive: '#0A6771',
-    /** 主色浅色背景（选中/标签底） */
-    colorPrimaryBg: '#E3F4F6',
-    /** 主色浅色背景悬浮 */
-    colorPrimaryBgHover: '#D6EEF1',
-    /** 主色浅色边框 */
-    colorPrimaryBorder: '#9AD0D6',
-    /** 链接颜色与主色一致 */
-    colorLink: '#0E7F8A',
+export interface AntdThemeOptions {
+  /** 外观风格：neu = 新拟物，classic = 经典（改造前样式） */
+  uiStyle: UiStyle;
+  /** 明暗模式 */
+  colorMode: ColorMode;
+}
 
-    // ========== 功能色 ==========
-    /** 成功/健康 - 治愈绿 */
-    colorSuccess: '#16A34A',
-    /** 警示 - 温和橙 */
-    colorWarning: '#F59E0B',
-    /** 危险 - 克制的红 */
-    colorError: '#EF4444',
-    /** 信息 - 同主色 */
-    colorInfo: '#0E7F8A',
+/**
+ * 构建 Ant Design 主题配置。
+ *
+ * 组合出四种外观：新拟物/经典 × 浅色/深色。
+ * 其中「经典 + 浅色」的取值与改造前**逐项一致**，确保回退时观感完全还原。
+ */
+export function getAntdTheme({ uiStyle, colorMode }: AntdThemeOptions): ThemeConfig {
+  const isNeu = uiStyle === 'neu';
+  const isDark = colorMode === 'dark';
 
-    // ========== 中性色（暖灰底 + 层级文字） ==========
-    /** 页面底色（暖灰，非纯白） */
-    colorBgLayout: '#F6F8FA',
-    /** 容器背景 */
-    colorBgContainer: '#FFFFFF',
-    /** 主要边框 */
-    colorBorder: '#E3E8EE',
-    /** 次级边框/分割线 */
-    colorBorderSecondary: '#EDF0F3',
-    /** 主文字（深蓝灰，非纯黑） */
-    colorText: '#1F2D3D',
-    /** 次级文字 */
-    colorTextSecondary: '#5C6B7A',
-    /** 弱文字 */
-    colorTextTertiary: '#8A97A6',
-    /** 占位/头像底 */
-    colorFillQuaternary: '#F1F4F7',
+  // ── 品牌色：深色下提亮，保证主操作在深底上依然醒目 ──
+  const primary = isDark ? '#2FB3C0' : '#0E7F8A';
+  const primaryHover = isDark ? '#46C4D0' : '#1B8E99';
+  const primaryActive = isDark ? '#1A9AA6' : '#0A6771';
+  const primaryBg = isDark ? 'rgba(47,179,192,0.16)' : '#E3F4F6';
+  const primaryBgHover = isDark ? 'rgba(47,179,192,0.24)' : '#D6EEF1';
+  const primaryBorder = isDark ? 'rgba(47,179,192,0.42)' : '#9AD0D6';
 
-    // ========== 字体 ==========
-    /** 字体栈 - 中文字体优先 */
-    fontFamily: `"PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif`,
-    /** 基准字号 14px */
-    fontSize: 14,
+  // ── 中性色 ──
+  // 拟物模式：页面底与容器**同色**（立体感来自阴影，而非底色差）
+  // 经典模式：保留改造前的「暖灰页底 + 白色容器」
+  const pageBg = isNeu
+    ? isDark
+      ? '#262E33'
+      : '#E8EBF2'
+    : isDark
+      ? '#16191C'
+      : '#F6F8FA';
+  const containerBg = isNeu ? pageBg : isDark ? '#1F2529' : '#FFFFFF';
 
-    // ========== 形状与阴影（精致感关键） ==========
-    /** 默认控件圆角 */
-    borderRadius: 8,
-    /** 大容器（卡片/弹窗）圆角 */
-    borderRadiusLG: 12,
-    /** 小元素（Tag/按钮）圆角 */
-    borderRadiusSM: 6,
-    /** 柔和分层阴影（卡片） */
-    boxShadow: '0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06)',
-    /** 弹窗等浮层阴影 */
-    boxShadowSecondary: '0 12px 32px rgba(16,24,40,.10)',
+  // 三级文字 —— [统一方案 2026-09-19] 按 WCAG 2.1 实测定值。
+  // 关键变化：**不再区分「拟物 / 经典」**。此前同一个语义在两套模式下给出不同色值
+  // （如 tertiary 拟物 #6B7A8A、经典 #8A97A6），是"不同页面文字深浅不一致"的根源；
+  // 现统一为一组值，与 neu-tokens.css 的 --text-1/2/3 完全对应。
+  //
+  //   层级            浅色      深色      实测对比度（浅底 #F6F8FA / #E7EEF1）
+  //   textPrimary   #16232E   #EEF4F7   15.01 / 13.62  AAA
+  //   textSecondary #3F5162   #B8C7D1    7.69 /  6.98  AA+
+  //   textTertiary  #5B6A78   #93A2AE    5.22 /  4.74  AA
+  //                                    （原 #8A97A6 仅 2.79，严重偏浅）
+  const textPrimary = isDark ? '#EEF4F7' : '#16232E';
+  const textSecondary = isDark ? '#B8C7D1' : '#3F5162';
+  const textTertiary = isDark ? '#93A2AE' : '#5B6A78';
 
-    /** 内边距基准 */
-    padding: 16,
-    /** 外边距基准 */
-    margin: 16,
-  },
+  // 分界与填充：拟物模式取消实线边框，改用极浅同色分界
+  const borderColor = isDark
+    ? 'rgba(255,255,255,0.09)'
+    : isNeu
+      ? 'rgba(122,152,165,0.22)'
+      : '#E3E8EE';
+  const borderSecondary = isDark
+    ? 'rgba(255,255,255,0.05)'
+    : isNeu
+      ? 'rgba(122,152,165,0.12)'
+      : '#EDF0F3';
+  const fillQuaternary = isDark ? 'rgba(255,255,255,0.06)' : isNeu ? '#DFE7EB' : '#F1F4F7';
 
-  components: {
-    Layout: {
-      /** 浅色侧边栏背景 */
-      siderBg: '#FFFFFF',
-      /** 顶栏白色背景 */
-      headerBg: '#FFFFFF',
-      /** 顶栏高度 56px */
-      headerHeight: 56,
+  // 表头/菜单等浅底：拟物下与底色同源，仅靠轻微凹陷区分（见 neumorphism.css）
+  const subtleBg = isDark ? (isNeu ? '#262E33' : '#1F2529') : isNeu ? '#E8EBF2' : '#F8FAFB';
+  const hoverBg = isDark ? 'rgba(47,179,192,0.12)' : isNeu ? '#DCE6EA' : '#F0F8F9';
+
+  // 阴影：拟物用双向柔和阴影，经典沿用现有单向阴影
+  const shadow = isNeu
+    ? isDark
+      ? '6px 6px 14px rgba(0,0,0,0.45), -6px -6px 14px rgba(255,255,255,0.07)'
+      : '6px 6px 14px rgba(122,152,165,0.33), -6px -6px 14px rgba(255,255,255,0.76)'
+    : '0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06)';
+  const shadowSecondary = isNeu
+    ? isDark
+      ? '16px 16px 36px rgba(0,0,0,0.55), -16px -16px 36px rgba(255,255,255,0.06)'
+      : '16px 16px 36px rgba(122,152,165,0.33), -16px -16px 36px rgba(255,255,255,0.76)'
+    : '0 12px 32px rgba(16,24,40,.10)';
+
+  // 圆角：拟物偏大，强化柔软触感
+  const radiusBase = isNeu ? 12 : 8;
+  const radiusLG = isNeu ? 20 : 12;
+  const radiusSM = isNeu ? 10 : 6;
+
+  return {
+    // 深色使用 antd 官方暗色算法作为基底，再由下方 token 覆写为拟物取值
+    algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+
+    token: {
+      // ========== 品牌主色（青蓝体系，深色下提亮） ==========
+      colorPrimary: primary,
+      colorPrimaryHover: primaryHover,
+      colorPrimaryActive: primaryActive,
+      colorPrimaryBg: primaryBg,
+      colorPrimaryBgHover: primaryBgHover,
+      colorPrimaryBorder: primaryBorder,
+      colorLink: primary,
+
+      // ========== 功能色 ==========
+      colorSuccess: isDark ? '#3FCA77' : '#16A34A',
+      colorWarning: isDark ? '#F4A83A' : '#F59E0B',
+      colorError: isDark ? '#F87171' : '#EF4444',
+      colorInfo: primary,
+
+      // ========== 中性色 ==========
+      colorBgLayout: pageBg,
+      colorBgContainer: containerBg,
+      /** 浮层（弹窗 / 下拉 / 抽屉）底色：拟物下与容器同色，靠阴影浮起 */
+      colorBgElevated: isDark ? '#2C353B' : isNeu ? '#E8EBF2' : '#FFFFFF',
+      colorBorder: borderColor,
+      colorBorderSecondary: borderSecondary,
+      colorText: textPrimary,
+      colorTextSecondary: textSecondary,
+      colorTextTertiary: textTertiary,
+      colorFillQuaternary: fillQuaternary,
+      /** 占位符与禁用文字：[统一方案] 与 --text-placeholder 一致。
+          占位符豁免 AA 对比度要求（属临时提示），但仍保证可辨识（约 2.8:1）；
+          原经典浅色 #B3BDC7 仅 1.79:1，几乎看不清。 */
+      colorTextPlaceholder: isDark ? '#7F8D99' : '#8B98A6',
+
+      // ========== 字体 ==========
+      fontFamily: `"PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif`,
+      fontSize: 14,
+
+      // ========== 形状与阴影 ==========
+      borderRadius: radiusBase,
+      borderRadiusLG: radiusLG,
+      borderRadiusSM: radiusSM,
+      boxShadow: shadow,
+      boxShadowSecondary: shadowSecondary,
+
+      padding: 16,
+      margin: 16,
     },
-    Menu: {
-      /** 浅色菜单：透明底 */
-      itemBg: 'transparent',
-      /** 浅青胶囊选中背景 */
-      itemSelectedBg: '#E3F4F6',
-      /** 选中文字 - 医疗青蓝 */
-      itemSelectedColor: '#0E7F8A',
-      /** 悬浮背景 */
-      itemHoverBg: '#F1F4F7',
-      /** 菜单项圆角 */
-      itemBorderRadius: 8,
-      /** 菜单项高度（更舒展） */
-      itemHeight: 44,
-      /** 图标与文字间距 */
-      iconMarginInlineEnd: 10,
-      /** 子菜单背景透明（浅色） */
-      subMenuItemBg: 'transparent',
-      /** 分组标题颜色（弱化） */
-      groupTitleColor: '#8A97A6',
-      /** 分组标题字号 */
-      groupTitleFontSize: 12,
-    },
-    Table: {
-      /** 表头浅灰背景 */
-      headerBg: '#F8FAFB',
-      /** 表头文字 - 次级灰 */
-      headerColor: '#5C6B7A',
-      /** 行悬浮 - 浅青 */
-      rowHoverBg: '#F0F8F9',
-    },
-    Button: {
-      /** 主按钮柔和投影（医疗青蓝光晕） */
-      primaryShadow: '0 2px 6px rgba(14,127,138,.2)',
-    },
-    Card: {
-      /** 卡片内容区域内边距 */
-      paddingLG: 20,
-      /** 大容器圆角 12px */
-      borderRadiusLG: 12,
-      /** 卡片头部背景 */
-      headerBg: '#F8FAFB',
-    },
-    Form: {
-      /** 表单项底部间距 */
-      itemMarginBottom: 16,
-      /** 垂直布局标签内边距 */
-      verticalLabelPadding: '0 0 4px',
-    },
-    // [修复 2026-09-05] antd v5 组件配置中不存在 Title 键（TS2353），
-    // 标题间距由 Typography 组件 token 控制
-    Typography: {
-      /** 去除标题默认上间距，避免与容器 padding 叠加 */
-      titleMarginTop: 0,
-    },
-  },
-};
 
-export default theme;
+    components: {
+      Layout: {
+        /** 侧边栏 / 顶栏与页面底同源（拟物下同色，经典下白色） */
+        siderBg: containerBg,
+        headerBg: containerBg,
+        headerHeight: 56,
+        /** 内容区背景跟随页面底，避免出现色块断层 */
+        bodyBg: pageBg,
+      },
+      Menu: {
+        itemBg: 'transparent',
+        itemSelectedBg: primaryBg,
+        itemSelectedColor: primary,
+        itemHoverBg: hoverBg,
+        itemBorderRadius: isNeu ? 12 : 8,
+        itemHeight: 44,
+        iconMarginInlineEnd: 10,
+        subMenuItemBg: 'transparent',
+        groupTitleColor: textTertiary,
+        groupTitleFontSize: 12,
+      },
+      Table: {
+        headerBg: subtleBg,
+        headerColor: textSecondary,
+        rowHoverBg: hoverBg,
+        /** 拟物下取消表头分割线，改为整体凹陷（见 neumorphism.css） */
+        borderColor: borderSecondary,
+      },
+      Button: {
+        primaryShadow: isNeu
+          ? isDark
+            ? '6px 6px 14px rgba(0,0,0,0.45), -6px -6px 14px rgba(255,255,255,0.07)'
+            : '6px 6px 14px rgba(11,74,83,0.19), -6px -6px 14px rgba(255,255,255,0.76)'
+          : `0 2px 6px ${isDark ? 'rgba(47,179,192,0.28)' : 'rgba(14,127,138,.2)'}`,
+        defaultShadow: 'none',
+        borderColorDisabled: 'transparent',
+      },
+      Card: {
+        paddingLG: 20,
+        borderRadiusLG: radiusLG,
+        headerBg: subtleBg,
+        colorBorderSecondary: borderSecondary,
+      },
+      Form: {
+        itemMarginBottom: 16,
+        verticalLabelPadding: '0 0 4px',
+      },
+      Typography: {
+        titleMarginTop: 0,
+      },
+      Modal: {
+        contentBg: isDark ? '#2C353B' : isNeu ? '#E8EBF2' : '#FFFFFF',
+        headerBg: 'transparent',
+      },
+      Drawer: {
+        colorBgElevated: isDark ? '#2C353B' : isNeu ? '#E8EBF2' : '#FFFFFF',
+      },
+      Input: {
+        colorBgContainer: isNeu ? containerBg : isDark ? '#1F2529' : '#FFFFFF',
+        activeShadow: 'none',
+        activeBorderColor: primary,
+        hoverBorderColor: isNeu ? 'transparent' : primaryBorder,
+      },
+      Select: {
+        colorBgContainer: isNeu ? containerBg : isDark ? '#1F2529' : '#FFFFFF',
+        optionSelectedBg: primaryBg,
+      },
+      Pagination: {
+        itemActiveBg: primaryBg,
+      },
+      Tabs: {
+        itemSelectedColor: primary,
+        inkBarColor: primary,
+      },
+    },
+  };
+}
+
+export default getAntdTheme;

@@ -159,7 +159,7 @@ const UserManage: React.FC = () => {
             content: (
               <div>
                 <div>新密码：<Text strong copyable code>{res.password}</Text></div>
-                <div style={{ marginTop: 8, color: '#888' }}>
+                <div style={{ marginTop: 8, color: 'var(--text-3)' }}>
                   请将该密码告知使用者，其首次登录时会被强制修改。
                 </div>
               </div>

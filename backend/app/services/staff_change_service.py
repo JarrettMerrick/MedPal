@@ -291,7 +291,10 @@ def submit_change(
     # 避免审核列表出现重复条目（并返回原审核人，保证调用方行为不变）。
     duplicate = _find_duplicate(db, employee_id=staff.employee_id, changed=changed)
     if duplicate is not None:
-        logger.info(
+        # [修正 2026-09-19] INFO → WARN：按规范「数据插入幂等」属可预知且需留意的
+        # 非正常分支 —— 它意味着同一次变更被登记了两次（前端重复提交或调用方重试），
+        # 虽已妥善复用记录、不影响数据正确性，但值得在日志中显式可见。
+        logger.warning(
             "人员信息变更去重：复用已有待审记录 id=%s, 工号=%s, 字段=%s（本次来源=%s）",
             duplicate.id, staff.employee_id, list(changed.keys()), source,
         )
@@ -400,7 +403,7 @@ def notify_reviewers(db: Session, req: StaffChangeRequest, reviewers: list[str])
             ),
         )
     except Exception as e:  # 通知失败不影响主流程
-        logger.warning("变更审核通知发送失败 id=%s: %s", req.id, e)
+        logger.warning("变更审核通知发送失败 id=%s: %s", req.id, e, exc_info=True)
 
 
 def _notify_intro_updated(db: Session, req: StaffChangeRequest, submitter: User) -> None:
@@ -437,7 +440,7 @@ def _notify_intro_updated(db: Session, req: StaffChangeRequest, submitter: User)
             ),
         )
     except Exception as e:  # 通知失败不影响主流程
-        logger.warning("个人介绍修改通知发送失败 id=%s: %s", req.id, e)
+        logger.warning("个人介绍修改通知发送失败 id=%s: %s", req.id, e, exc_info=True)
 
 
 def _notify_result(db: Session, req: StaffChangeRequest, *, ok: bool) -> None:
@@ -500,7 +503,7 @@ def _notify_result(db: Session, req: StaffChangeRequest, *, ok: bool) -> None:
                 ),
             )
     except Exception as e:
-        logger.warning("变更审核结果通知失败 id=%s: %s", req.id, e)
+        logger.warning("变更审核结果通知失败 id=%s: %s", req.id, e, exc_info=True)
 
 
 def _sync_user_fields(db: Session, employee_id: str, fields: dict) -> None:
@@ -559,7 +562,7 @@ def _cleanup_photos(req: StaffChangeRequest, *, restored: bool) -> None:
             if path:
                 delete_file(path)
     except Exception as e:
-        logger.warning("照片文件清理失败 id=%s: %s", req.id, e)
+        logger.warning("照片文件清理失败 id=%s: %s", req.id, e, exc_info=True)
 
 
 # ==================== 审核 ====================
@@ -889,7 +892,7 @@ def sweep_overdue(db: Session) -> dict:
                         ),
                     )
                 except Exception as e:
-                    logger.warning("超时升级通知失败 id=%s: %s", req.id, e)
+                    logger.warning("超时升级通知失败 id=%s: %s", req.id, e, exc_info=True)
             escalated += 1
         elif not req.reminded_at and req.submitted_at <= remind_line:
             req.reminded_at = now
@@ -918,7 +921,7 @@ def sweep_overdue(db: Session) -> dict:
                         ),
                     )
                 except Exception as e:
-                    logger.warning("超时提醒通知失败 id=%s: %s", req.id, e)
+                    logger.warning("超时提醒通知失败 id=%s: %s", req.id, e, exc_info=True)
             reminded += 1
 
     if reminded or escalated:

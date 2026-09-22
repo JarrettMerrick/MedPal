@@ -251,4 +251,6 @@ def init_default_configs(db: Session):
     if notice_cfg is not None and (notice_cfg.config_value or "").strip() == _LEGACY_DEFAULT_NOTICE:
         notice_cfg.config_value = ""
         notice_cfg.updated_by = "system"
-        logger.info("已清空历史默认公告（原 HIS 数据迁移说明），公告栏将显示「暂无公告」")
+        # [修正 2026-09-19] INFO → DEBUG：属启动期一次性内部数据清理（把历史内置
+        # 公告置空），无业务参数、对日常排查无帮助，按规范降级避免刷启动日志。
+        logger.debug("已清空历史默认公告（原 HIS 数据迁移说明），公告栏将显示「暂无公告」")

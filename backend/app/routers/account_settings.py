@@ -55,6 +55,8 @@ from app.utils import get_client_ip, hash_password, utc_now, verify_password, to
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/account-settings", tags=["账号设置"])
 
 # 口令模板中代表「按人区分」的占位符；模板不含它时全员将得到同一个口令
@@ -439,7 +441,11 @@ def _run_password_reset(
                         f"scope={'||'.join(departments) if departments else '*'}, "
                         f"excluded_super_admins={task.super_admin_excluded}, "
                         f"excluded_unassigned={task.unassigned_excluded}, "
-                        f"rule={template}"
+                        # [修复 2026-09-19] 不再记录口令模板原文：当模板不含 {工号}
+                        # 占位符时（is_uniform=True），模板本身**等于**批量重置后的
+                        # 明文口令，写入审计会直接泄露全批口令。
+                        # 改为只记录"是否为统一口令"这一可用于事后追溯的事实。
+                        f"rule_has_placeholder={not is_uniform}"
                     ),
                     target="*", ip_address=client_ip,
                 )
@@ -482,7 +488,9 @@ def _run_password_reset(
                 except Exception:
                     db.rollback()
         except Exception as e:
-            logger.error("批量重置密码任务失败 task_id=%s: %s", task_id, e, exc_info=True)
+            # [修正 2026-09-19] ERROR → WARN：后台批处理任务失败，非核心依赖故障；
+            # 失败状态会写入任务表供前端进度条展示，用户可感知并重试。
+            logger.warning("批量重置密码任务失败 task_id=%s: %s", task_id, e, exc_info=True)
             db.rollback()
             try:
                 task = db.query(PasswordResetTask).filter(PasswordResetTask.id == task_id).first()
@@ -500,7 +508,10 @@ def _run_password_reset(
         run_serial(_do_reset)
     except Exception:
         # run_serial 内部已记录日志；此处兜底避免后台任务异常外溢
-        logger.error("批量重置密码串行任务异常 task_id=%s", task_id, exc_info=True)
+        # [修正 2026-09-19] ERROR → DEBUG：该异常已在 task_queue.run_serial 中以
+        # ERROR + 堆栈完整记录（任务的最终失败点），此处再记 ERROR 属规范禁止的
+        # 「不同地方重复记录同一事件」，改为 DEBUG 保留兜底痕迹而不产生重复告警。
+        logger.debug("批量重置密码串行任务异常（已由任务队列记录）task_id=%s", task_id)
 
 
 @router.get("/reset-all-passwords/status")

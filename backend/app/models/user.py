@@ -42,6 +42,13 @@ class User(Base):
     )
     is_active = Column(Boolean, default=True, comment="是否启用")
     must_change_password = Column(Boolean, default=True, comment="首次登录需修改密码")
+    # [新增 2026-09-17] 注册审核状态（app.constants.REVIEW_*）：
+    # 自助注册创建的账号为 pending（可登录，但仅能查看/修改个人资料），审核通过置 approved，
+    # 驳回置 rejected 并禁用登录。管理员创建/批量导入/存量账号默认 approved，不受影响。
+    review_status = Column(
+        String(20), nullable=False, default="approved",
+        comment="注册审核状态: pending-待审核(受限), approved-已通过, rejected-已驳回",
+    )
     login_attempts = Column(Integer, default=0, comment="连续登录失败次数")
     locked_until = Column(DateTime, nullable=True, comment="锁定截止时间")
     password_changed_at = Column(DateTime, nullable=True, comment="密码最后修改时间")

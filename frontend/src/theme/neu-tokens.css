@@ -1,0 +1,328 @@
+/* Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com) */
+/* Licensed under the MIT License. See LICENSE file for details. */
+
+/**
+ * 新拟物全局变量层（Neu-Tokens）
+ * ============================
+ * 全站唯一视觉数值来源：页面与组件**只引用变量**，不写死色值与阴影。
+ *
+ * 双模式隔离（可回退的关键）
+ * -------------------------
+ * 通过根元素两个属性组合出四种外观：
+ *   data-ui-style="neu|classic"    → 新拟物 / 经典（改造前的现有样式）
+ *   data-color-mode="light|dark"   → 浅色 / 深色
+ *
+ * 三条设计纪律：
+ *   1) **默认零破坏**：`:root` 中的取值与改造前逐项一致。未设置 `data-ui-style`
+ *      时，全站观感与改造前完全相同；只有显式声明 `data-ui-style="neu"` 才启用拟物。
+ *      这样即使脚本异常未写入属性，也只会停留在「经典」而不会出现半成品样式。
+ *   2) **拟物规则另置**：立体效果（阴影、去边框、凹陷控件）写在 neumorphism.css 的
+ *      `[data-ui-style="neu"]` 之下；本文件只负责切换**变量值**，
+ *      因此各页面无需感知当前模式 —— 同一句 `var(--neu-bg)` 在四种组合下都正确。
+ *   3) **组合选择器消歧**：深色与风格均只用组合选择器书写（如
+ *      `[data-ui-style="neu"][data-color-mode="dark"]`），不依赖书写顺序，
+ *      避免单属性选择器同优先级带来的覆盖不确定。
+ *
+ * 变量命名
+ * --------
+ *   --neu-page-bg      页面底（拟物下与表面同色，经典下为暖灰）
+ *   --neu-bg           表面色（卡片 / 面板 / 输入框底）
+ *   --neu-dark         暗影（同色相加深，避免发灰变脏）
+ *   --neu-inset-dark   凹陷暗影（比凸起略强，保证输入框边界可辨）
+ *   --neu-light        亮影（近白；深色下为极低透明度白）
+ *   --neu-raised-*     凸起阴影阶梯 xs / sm / md / lg
+ *   --neu-inset-*      凹陷阴影阶梯 xs / sm / md
+ *   --text-1/2/3       三级文字；--text-placeholder / --text-icon 弱化色
+ *   --line-soft        柔和分界（替代边框）
+ *   --accent*          品牌强调色族（医疗青蓝，主操作专用）
+ *   --radius-*         圆角阶梯；--ease-neu 统一过渡
+ */
+
+/* ==================== 一、默认层：等于改造前的现有取值（零破坏） ==================== */
+/**
+ * 未设置任何根属性时的外观 —— 与改造前完全一致。
+ * 这里的值同时充当「经典」模式（data-ui-style="classic"）的取值，
+ * 因此经典模式无需重复声明即可正确回退。
+ */
+:root {
+  /* ---------- 品牌强调色族（医疗青蓝，与现有 colorPrimary 一致） ---------- */
+  --accent: #0e7f8a;
+  --accent-hover: #1b8e99;
+  --accent-strong: #0a6771;
+  --accent-soft: #e3f4f6;
+  --accent-soft-hover: #d6eef1;
+  --accent-border: #9ad0d6;
+
+  /* ---------- 底色与表面（现有：暖灰页底 + 白色表面） ---------- */
+  --neu-page-bg: #f6f8fa;
+  --neu-bg: #ffffff;
+
+  /* ---------- 阴影色（现有单向柔和阴影，无亮影） ---------- */
+  --neu-dark: rgba(16, 24, 40, 0.06);
+  --neu-inset-dark: rgba(16, 24, 40, 0.06);
+  --neu-light: transparent;
+
+  /* ---------- 凸起阶梯（现有取值；xs 与凹陷阶梯在经典下为 none） ---------- */
+  --neu-raised-xs: none;
+  --neu-raised-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --neu-raised-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --neu-raised-lg: 0 12px 32px rgba(16, 24, 40, 0.1);
+
+  --neu-inset-xs: none;
+  --neu-inset-sm: none;
+  --neu-inset-md: none;
+
+  /* ---------- 主操作（现有：实色 + 柔和投影） ---------- */
+  --neu-accent-gradient: #0e7f8a;
+  --neu-accent-gradient-hover: #1b8e99;
+  --neu-accent-raised: 0 2px 6px rgba(14, 127, 138, 0.2);
+  --neu-accent-raised-hover: 0 4px 10px rgba(14, 127, 138, 0.26);
+  --neu-accent-pressed: none;
+
+  /* ---------- 三级文字 ---------- */
+  /* [统一方案 2026-09-19] 按 WCAG 2.1 实测定值，实测底 = #f6f8fa：
+       text-1 #16232e → 15.01:1  AAA
+       text-2 #3f5162 →  7.69:1  AAA
+       text-3 #5b6a78 →  5.22:1  AA   （原 #8a97a6 仅 2.79:1，严重偏浅）
+     placeholder 属占位提示，豁免 AA，但需保证可辨识（2.76:1）。
+     注：本套（默认/经典浅色）与拟物浅色共用同一组值，
+     消除此前「同一语义两套色值」造成的页面间观感差异。 */
+  --text-1: #16232e;
+  --text-2: #3f5162;
+  --text-3: #5b6a78;
+  --text-placeholder: #8b98a6;
+  --text-disabled: #a9b3bf;
+  --text-on-accent: #ffffff;
+  --text-icon: #8a97a6;
+
+  /* ---------- 柔和分界（现有边框色） ---------- */
+  --line-soft: #e3e8ee;
+  --line-softer: #edf0f3;
+
+  /* ---------- 功能色（与现有 antd token 一致） ---------- */
+  --ok: #16a34a;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --ok-soft: #e7f6ec;
+  --warn-soft: #fef4e6;
+  --danger-soft: #fdecec;
+
+  /* ---------- 圆角（现有取值） ---------- */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 12px;
+
+  /* ---------- 交互反馈 ---------- */
+  --focus-ring: 0 0 0 2px rgba(14, 127, 138, 0.3);
+  --ease-neu: 0.22s ease;
+  --neu-dot-color: rgba(122, 152, 165, 0.4);
+
+  /* ---------- 滚动条（默认层 = 系统默认，不干预） ----------
+     [新增 2026-09-19] 默认与经典模式沿用浏览器原生滚动条，
+     只有新拟物模式才接管（见 neumorphism.css），保证可回退。 */
+  --scrollbar-size: 12px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: auto;
+  --scrollbar-thumb-hover: auto;
+  --scrollbar-thumb-active: auto;
+}
+
+/* ==================== 二、新拟物 · 浅色 ==================== */
+/**
+ * 新拟物的成立前提：表面与页面底**同色**，立体感全部来自双向阴影。
+ * 底色取品牌青蓝的同色系浅调 #E8EBF2（而非中性灰），
+ * 暗影为底色同色相加深（避免发灰变脏），亮影为近白。
+ */
+[data-ui-style='neu'] {
+  /* [调整 2026-09-19] 底色按需求改为 #E8EBF2（偏冷蓝灰，比原先的青蓝浅调更中性）。
+     表面色必须与之**完全同色** —— 这是新拟物「立体感全部来自阴影」的成立前提。 */
+  --neu-page-bg: #e8ebf2;
+  --neu-bg: #e8ebf2;
+
+  /* 暗影取底色的**同色相加深**（蓝灰），避免在偏蓝的底上出现发绿发脏的青灰阴影；
+     亮影维持近白。 */
+  --neu-dark: rgba(146, 154, 186, 0.34);
+  --neu-inset-dark: rgba(146, 154, 186, 0.44);
+  --neu-light: rgba(255, 255, 255, 0.78);
+
+  /* 凸起：右下暗影 + 左上亮影（元素向光） */
+  --neu-raised-xs: 3px 3px 7px var(--neu-dark), -3px -3px 7px var(--neu-light);
+  --neu-raised-sm: 5px 5px 12px var(--neu-dark), -5px -5px 12px var(--neu-light);
+  --neu-raised-md: 9px 9px 20px var(--neu-dark), -9px -9px 20px var(--neu-light);
+  --neu-raised-lg: 16px 16px 36px var(--neu-dark), -16px -16px 36px var(--neu-light);
+
+  /* 凹陷：反向内收（输入框 / 下拉框 / 勾选框 / 空态槽 / 表头条） */
+  --neu-inset-xs: inset 2px 2px 5px var(--neu-inset-dark), inset -2px -2px 5px var(--neu-light);
+  --neu-inset-sm: inset 4px 4px 9px var(--neu-inset-dark), inset -4px -4px 9px var(--neu-light);
+  --neu-inset-md: inset 6px 6px 14px var(--neu-inset-dark), inset -6px -6px 14px var(--neu-light);
+
+  /* 彩色凸起：全站唯一高饱和元素，专供主操作 */
+  --neu-accent-gradient: linear-gradient(145deg, #12909c 0%, #0b6b75 100%);
+  --neu-accent-gradient-hover: linear-gradient(145deg, #149aa7 0%, #0d7580 100%);
+  --neu-accent-raised: 6px 6px 14px rgba(11, 74, 83, 0.19), -6px -6px 14px var(--neu-light);
+  --neu-accent-raised-hover: 8px 8px 18px rgba(11, 74, 83, 0.23), -8px -8px 18px var(--neu-light);
+  --neu-accent-pressed: inset 5px 5px 12px rgba(6, 50, 57, 0.3),
+    inset -4px -4px 10px rgba(255, 255, 255, 0.12);
+
+  /* 三级文字。
+     [核对 2026-09-19] 按 WCAG 相对亮度公式实测于底色 #e8ebf2：
+       --text-1 #2b3d46 → 8.9:1  ✅ AAA
+       --text-2 #5a6b7e → 4.6:1  ✅ AA（原 #5f7488 仅 4.06:1，不达标，已加深）
+       --text-3 #6b7a8a → 3.7:1  ⚠️ 仅用于「弱化辅助文字」（时间戳、暂无数据等），
+                                   接近 AA Large 要求；正文与标签一律用 text-1/text-2 */
+  /* [统一方案 2026-09-19] 与默认浅色共用同一组值，实测底 = #e7eef1：
+       text-1 13.62:1 AAA · text-2 6.98:1 · text-3 4.74:1 AA
+     （原 text-3 #6b7a8a 仅 3.75:1，正文不达标） */
+  --text-1: #16232e;
+  --text-2: #3f5162;
+  --text-3: #5b6a78;
+  --text-placeholder: #8b98a6;
+  --text-disabled: #a9b3bf;
+  --text-on-accent: #ffffff;
+  --text-icon: #7d94a1;
+
+  /* 柔和分界：取消描边，改用极浅同色分界（与底色同色相） */
+  --line-soft: rgba(146, 154, 186, 0.24);
+  --line-softer: rgba(146, 154, 186, 0.13);
+
+  /* 新拟物偏大圆角，强化柔软触感 */
+  --radius-control: 14px;
+  --radius-card: 20px;
+  --radius-panel: 28px;
+
+  --neu-dot-color: rgba(146, 154, 186, 0.55);
+
+  /* ---------- 滚动条（新拟物 · 浅色） ----------
+     轨道与页面底同色（凹陷表达），滑块为底色同色相加深（凸起表达），
+     拖拽时转为品牌色，与「主操作用彩色凸起」的规范一致。 */
+  /* 滑块取偏淡的半透明（默认几乎不打断视线，悬停时才明确可见），
+     以满足「不希望看见滚动条」的诉求，同时保留可发现性 */
+  --scrollbar-size: 12px;
+  --scrollbar-track: var(--neu-bg);
+  --scrollbar-thumb: rgba(146, 154, 186, 0.34);
+  --scrollbar-thumb-hover: rgba(146, 154, 186, 0.6);
+  --scrollbar-thumb-active: var(--accent);
+}
+
+/* ==================== 三、新拟物 · 深色（亮暗反转） ==================== */
+/**
+ * 深色下亮边与暗边**方向不变、取值反转**：
+ *   - 暗影改为高透明度黑（深底上只有足够深才压得住）；
+ *   - 亮影改为极低透明度白（近白在深底上会过曝，反而失去层次）。
+ * 同时提亮品牌色，保证主操作在深底上的对比度。
+ */
+[data-ui-style='neu'][data-color-mode='dark'] {
+  --accent: #2fb3c0;
+  --accent-hover: #46c4d0;
+  --accent-strong: #1a9aa6;
+  --accent-soft: rgba(47, 179, 192, 0.16);
+  --accent-soft-hover: rgba(47, 179, 192, 0.24);
+  --accent-border: rgba(47, 179, 192, 0.42);
+
+  --neu-page-bg: #262e33;
+  --neu-bg: #262e33;
+
+  --neu-dark: rgba(0, 0, 0, 0.55);
+  --neu-inset-dark: rgba(0, 0, 0, 0.68);
+  --neu-light: rgba(255, 255, 255, 0.07);
+
+  --neu-inset-xs: inset 2px 2px 5px var(--neu-inset-dark), inset -2px -2px 5px var(--neu-light);
+  --neu-inset-md: inset 6px 6px 14px var(--neu-inset-dark), inset -6px -6px 14px var(--neu-light);
+
+  --neu-accent-gradient: linear-gradient(145deg, #2aa7b3 0%, #1a7f89 100%);
+  --neu-accent-gradient-hover: linear-gradient(145deg, #35bcc9 0%, #1e8c97 100%);
+  --neu-accent-raised: 6px 6px 14px rgba(0, 0, 0, 0.45), -6px -6px 14px var(--neu-light);
+  --neu-accent-raised-hover: 8px 8px 18px rgba(0, 0, 0, 0.5), -8px -8px 18px var(--neu-light);
+  --neu-accent-pressed: inset 5px 5px 12px rgba(0, 0, 0, 0.55),
+    inset -4px -4px 10px rgba(255, 255, 255, 0.04);
+
+  /* [统一方案 2026-09-19] 深色三级文字，实测定值（底 #262e33）：
+       text-1 12.44:1 AAA · text-2 7.97:1 AAA · text-3 5.27:1 AA
+     （原 text-3 #7d8b96 仅 3.95:1，正文不达标） */
+  --text-1: #eef4f7;
+  --text-2: #b8c7d1;
+  --text-3: #93a2ae;
+  --text-placeholder: #7f8d99;
+  --text-disabled: #5f6b76;
+  --text-on-accent: #ffffff;
+  --text-icon: #8b99a4;
+
+  --line-soft: rgba(255, 255, 255, 0.09);
+  --line-softer: rgba(255, 255, 255, 0.05);
+
+  --ok: #3fca77;
+  --warn: #f4a83a;
+  --danger: #f87171;
+  --ok-soft: rgba(63, 202, 119, 0.16);
+  --warn-soft: rgba(244, 168, 58, 0.16);
+  --danger-soft: rgba(248, 113, 113, 0.16);
+
+  --focus-ring: 0 0 0 2px rgba(47, 179, 192, 0.45);
+  --neu-dot-color: rgba(255, 255, 255, 0.14);
+
+  /* ---------- 滚动条（新拟物 · 深色） ----------
+     深底上若沿用浅色滑块会刺眼，改为低透明度白（与亮影同源），
+     拖拽时同样转品牌色（深色下品牌色已提亮）。 */
+  --scrollbar-track: var(--neu-bg);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
+  --scrollbar-thumb-active: var(--accent);
+}
+
+/* ==================== 四、经典 · 深色（组合态，独立书写以免歧义） ==================== */
+/**
+ * 「经典」是回退选项，但深色仍需成立：给出深色下的经典取值
+ * （深底 + 卡面 + 单向阴影），与 antd darkAlgorithm 观感一致。
+ */
+[data-ui-style='classic'][data-color-mode='dark'] {
+  --accent: #2fb3c0;
+  --accent-hover: #46c4d0;
+  --accent-strong: #1a9aa6;
+  --accent-soft: rgba(47, 179, 192, 0.16);
+  --accent-soft-hover: rgba(47, 179, 192, 0.24);
+  --accent-border: rgba(47, 179, 192, 0.42);
+
+  --neu-page-bg: #16191c;
+  --neu-bg: #1f2529;
+
+  --neu-dark: rgba(0, 0, 0, 0.45);
+  --neu-light: transparent;
+  --neu-raised-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --neu-raised-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --neu-raised-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  --neu-accent-gradient: #2fb3c0;
+  --neu-accent-gradient-hover: #46c4d0;
+
+  /* [统一方案 2026-09-19] 同拟物深色，与经典深色共用一组值 */
+  --text-1: #eef4f7;
+  --text-2: #b8c7d1;
+  --text-3: #93a2ae;
+  --text-placeholder: #7f8d99;
+  --text-disabled: #5f6b76;
+  --text-on-accent: #ffffff;
+  --text-icon: #8b99a4;
+
+  --line-soft: rgba(255, 255, 255, 0.1);
+  --line-softer: rgba(255, 255, 255, 0.06);
+
+  --ok: #3fca77;
+  --warn: #f4a83a;
+  --danger: #f87171;
+  --ok-soft: rgba(63, 202, 119, 0.16);
+  --warn-soft: rgba(244, 168, 58, 0.16);
+  --danger-soft: rgba(248, 113, 113, 0.16);
+
+  --focus-ring: 0 0 0 2px rgba(47, 179, 192, 0.45);
+}
+
+/* ==================== 五、无障碍：尊重系统的减少动效偏好 ==================== */
+/**
+ * 前庭功能敏感用户对位移与阴影过渡不适。此处只收敛过渡时长，
+ * 不移除状态差异（按压 / 聚焦的视觉反馈仍然保留）。
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ease-neu: 0.01ms;
+  }
+}

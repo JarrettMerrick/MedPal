@@ -86,7 +86,7 @@ const DepartmentDetail: React.FC = () => {
   const categoryColorMap: Record<string, string> = { '护理病区': 'purple', '行政科室': 'green', '临床专科': 'blue' };
 
   if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
-  if (!department) return <div style={{ textAlign: 'center', padding: 80, color: '#999' }}>科室信息不存在</div>;
+  if (!department) return <div style={{ textAlign: 'center', padding: 80, color: 'var(--text-3)' }}>科室信息不存在</div>;
 
   return (
     <PageContainer maxWidth={960}>

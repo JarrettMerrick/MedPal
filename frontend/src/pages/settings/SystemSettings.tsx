@@ -166,7 +166,7 @@ const SystemSettings: React.FC = () => {
     borderRadius: token.borderRadiusLG,
     border: `1px solid ${token.colorBorderSecondary}`,
     backgroundImage:
-      'linear-gradient(45deg, #F0F2F5 25%, transparent 25%), linear-gradient(-45deg, #F0F2F5 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #F0F2F5 75%), linear-gradient(-45deg, transparent 75%, #F0F2F5 75%)',
+      'linear-gradient(45deg, var(--line-softer) 25%, transparent 25%), linear-gradient(-45deg, var(--line-softer) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--line-softer) 75%), linear-gradient(-45deg, transparent 75%, var(--line-softer) 75%)',
     backgroundSize: '16px 16px',
     backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
   };
@@ -301,8 +301,12 @@ const SystemSettings: React.FC = () => {
                 padding: token.paddingLG,
                 borderRadius: token.borderRadiusLG,
                 textAlign: 'center',
-                background: 'linear-gradient(135deg, #0E7F8A, #1B8E99 55%, #9AD0D6)',
-                color: '#fff',
+                /* [改造 2026-09-19] 与登录页现状对齐：品牌区已改为「同色底 + 双向阴影」的
+                   新拟物面板（见 global.css 的 .auth-neu__brand），此处预览同步改变量，
+                   文字由品牌底白字改为三级语义文字 */
+                background: 'var(--neu-bg)',
+                boxShadow: 'var(--neu-raised-sm)',
+                color: 'var(--text-1)',
               }}
             >
               {/* [调整 2026-09-10] 与登录页保持一致：高度固定 64px，宽度随 Logo 比例伸缩 */}
@@ -310,17 +314,19 @@ const SystemSettings: React.FC = () => {
                 style={{
                   height: 64, width: 'fit-content', maxWidth: '100%', padding: '0 16px',
                   margin: '0 auto 12px', borderRadius: 14,
-                  background: 'rgba(255,255,255,0.92)', display: 'flex',
+                  background: 'var(--neu-bg)', display: 'flex',
                   alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
                 }}
               >
                 <BrandLogo height={40} />
               </div>
-              <Title level={4} style={{ color: '#fff', margin: 0, fontWeight: 700 }}>
+              {/* [统一方案 2026-09-19] 字重 700 → 600：方案规定字重上限为 Semibold(600)，
+              700 在中文黑体下会显得过重、与其它页面的标题不一致。 */}
+          <Title level={4} style={{ color: 'var(--text-1)', margin: 0, fontWeight: 600 }}>
                 {branding.orgNameCn}
               </Title>
-              <div style={{ color: '#fff', opacity: 0.9, marginTop: 4 }}>{branding.systemName}</div>
-              <Text style={{ color: '#fff', opacity: 0.72, fontSize: token.fontSizeSM, display: 'block', marginTop: 6 }}>
+              <div style={{ color: 'var(--text-2)', marginTop: 4 }}>{branding.systemName}</div>
+              <Text style={{ color: 'var(--text-3)', fontSize: token.fontSizeSM, display: 'block', marginTop: 6 }}>
                 {branding.orgNameEn}
               </Text>
               {/* [新增 2026-09-12] 标语预览：与实际登录页一致，标语位于页面最底部 */}
@@ -329,7 +335,7 @@ const SystemSettings: React.FC = () => {
                   style={{
                     marginTop: token.marginMD,
                     paddingTop: token.marginSM,
-                    borderTop: '1px solid rgba(255,255,255,0.28)',
+                    borderTop: '1px solid var(--line-softer)',
                     fontSize: token.fontSizeSM,
                     opacity: 0.85,
                   }}
@@ -351,7 +357,7 @@ const SystemSettings: React.FC = () => {
                 padding: '0 16px',
                 border: `1px solid ${token.colorBorderSecondary}`,
                 borderRadius: token.borderRadiusLG,
-                background: '#fff',
+                background: 'var(--neu-bg)',
               }}
             >
               {/* [调整 2026-09-10] 与导航栏保持一致：高度固定 34px，宽度随 Logo 比例伸缩 */}

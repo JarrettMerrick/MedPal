@@ -37,6 +37,8 @@ export const PERM_REGULATION_DELETE = 'regulation.delete';
 // 标识管理
 // [修复 2026-09-07] 权限细化：拆分为「标识平面」与「标识设置」两大分类下的细粒度权限项
 export const PERM_SIGNAGE_VIEW = 'signage.view';
+// [新增 2026-09-18] 标识总览：独立权限点，默认仅科室管理员与超级管理员拥有（普通员工不可见）
+export const PERM_SIGNAGE_OVERVIEW = 'signage.overview';
 export const PERM_SIGNAGE_CREATE = 'signage.create';
 export const PERM_SIGNAGE_EDIT = 'signage.edit';
 export const PERM_SIGNAGE_DELETE = 'signage.delete';
@@ -51,6 +53,11 @@ export const PERM_SIGNAGE_REPAIR = 'signage.repair';          // 维修记录（
 export const PERM_SIGNAGE_CAMPUS = 'signage.campus';          // 院区管理
 export const PERM_SIGNAGE_CATEGORY = 'signage.category';      // 标识分类设置
 export const PERM_SIGNAGE_SUPPLIER = 'signage.supplier';      // 供应商设置
+// [新增 2026-09-17] 文件库（设计文件集中管理：分类 / 标签 / 版本 / 回收站 / 标准设计文件）
+export const PERM_FILE_VIEW = 'file.view';                    // 浏览 / 预览 / 下载
+export const PERM_FILE_UPLOAD = 'file.upload';                // 上传文件
+export const PERM_FILE_EDIT = 'file.edit';                    // 改名 / 分类 / 标签 / 标准标记 / 分类与标签维护
+export const PERM_FILE_DELETE = 'file.delete';                // 删除（含批量、回收站与彻底删除）
 // 用户管理
 export const PERM_USER_VIEW = 'user.view';
 export const PERM_USER_CREATE = 'user.create';

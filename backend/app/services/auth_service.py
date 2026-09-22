@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+# [调整 2026-09-17] 登录文案需区分「注册被驳回」（可重新申请）与「账号被禁用」
+from app.constants import REVIEW_REJECTED
 from app.models.token_blacklist import TokenBlacklist
 # [修复/问题14] 限流计数持久化模型（替代进程内存字典）
 from app.models.rate_limit import RateLimitRecord
@@ -125,6 +127,10 @@ def authenticate_user(
 
     if not user.is_active:
         record_rate_attempt(db, client_ip, "login")
+        # [调整 2026-09-17] 自助注册被驳回的账号同样处于禁用态，但应给出
+        # 更明确的指引（可重新提交注册申请），而不是笼统的「账号已被禁用」
+        if getattr(user, "review_status", None) == REVIEW_REJECTED:
+            return None, "注册申请未通过审核，请联系管理员或重新提交注册申请"
         return None, "账号已被禁用"
 
     if not verify_password(password, user.password_hash):

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,8 @@ from app.utils import (
     get_client_ip,
 )
 from sqlalchemy import func
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -215,6 +218,8 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
             work_type_scope=work_type_scope_val,
             department_scope=dept_scope,
             has_staff_record=has_staff,
+            # [新增 2026-09-17] 待审核账号（自助注册）：前端据此精简菜单并提示「审核中」
+            review_status=user.review_status,
         ),
     )
 
@@ -329,7 +334,7 @@ def logout(
         # [修复] 原先静默吞掉审计异常，登出可能无审计记录且难以排查；
         # 改为记录日志，保证登出留痕失败可被追踪
         import logging
-        logging.getLogger("auth").warning(f"登出审计留痕失败: {type(e).__name__}: {e}")
+        logging.getLogger("auth").warning(f"登出审计留痕失败: {type(e).__name__}: {e}", exc_info=True)
 
     db.commit()
     # [修复] 原先登出只把令牌加入黑名单，却没有清除 refresh_token Cookie，
@@ -466,6 +471,8 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         work_type_scope=work_type_scope_val,
         department_scope=dept_scope,
         has_staff_record=has_staff,
+        # [新增 2026-09-17] 与登录响应保持一致：会话恢复（/auth/me）也需带审核状态
+        review_status=current_user.review_status,
     )
 
 
@@ -581,7 +588,11 @@ def update_profile(
                      target=current_user.employee_id, ip_address=client_ip)
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     db.refresh(current_user)
     return current_user

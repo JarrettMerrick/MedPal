@@ -9,6 +9,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 # 项目根目录（config.py → app → backend → 项目根）
 # [改进] 使用 __file__ 计算绝对路径，确保不依赖当前工作目录(CWD)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent

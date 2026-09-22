@@ -1,7 +1,8 @@
 // [修复 2026-09-05] 平面设置页面：平面图资产完整 CRUD 管理（迁入标识设置菜单）
 import React, { useState, useEffect } from 'react';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
-  Card, Table, Button, Space, Modal, Form, Input, Select, Upload, message,
+  App, Card, Table, Button, Space, Modal, Form, Input, Select, Upload,
   Popconfirm, Tag, Breadcrumb, Typography, Row, Col,
 } from 'antd';
 import {
@@ -16,20 +17,21 @@ import type { FloorPlan } from '../../api/signage';
 import { campusApi } from '../../api/campus';
 import type { Campus, Building, Floor } from '../../types/campus';
 import SafeImage from '../../components/SafeImage';
+// [调整 2026-09-17] 楼层展示统一收敛到 utils/floor（楼层号已为 F3/B1 字母编号）
+import { floorLabel } from '../../utils/floor';
 
 const { Title, Text } = Typography;
 
 // [修复 2026-09-05] 平面类别枚举
 const CATEGORIES = ['院区平面', '楼层平面'];
 
-// [修复 2026-09-05] 楼层显示名：优先使用院区管理中维护的楼层名称，否则由楼层号生成（负数表示地下层）
-const floorLabel = (f: Floor) =>
-  f.floor_name || (f.floor_number < 0 ? `地下${Math.abs(f.floor_number)}层` : `${f.floor_number}层`);
-
-// [修复 2026-09-05] 楼层编号编码：地上记为 F3，地下记为 -1
-const floorCodeOf = (f: Floor) => (f.floor_number < 0 ? `${f.floor_number}` : `F${f.floor_number}`);
+// [调整 2026-09-17] 原有的本地 floorLabel / floorCodeOf 已移除：
+// 楼层号本身即字母编号（F3 = 三层、B1 = 地下一层），
+// 展示统一走 utils/floor 的 floorLabel（F3-门诊层），楼层编码直接取 floor_number。
 
 const PlanSettings: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   const [plans, setPlans] = useState<FloorPlan[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -108,8 +110,9 @@ const PlanSettings: React.FC = () => {
               const fr = await campusApi.getFloors(b.id);
               setFloors(fr.items);
               // 优先按 floor_id 精确匹配；历史数据仅有楼层编号时按编码兜底匹配
+              // [调整 2026-09-17] 历史数据兜底匹配：floor_code 即楼层号（F3 / B1）
               const f = (record.floor_id && fr.items.find((x) => x.id === record.floor_id))
-                || fr.items.find((x) => floorCodeOf(x) === record.floor_code);
+                || fr.items.find((x) => (x.floor_number || '') === (record.floor_code || ''));
               form.setFieldsValue({ floorId: f?.id });
             } catch {
               message.error('获取楼层失败');
@@ -160,7 +163,8 @@ const PlanSettings: React.FC = () => {
         building: isFloorPlan ? building?.name ?? null : null,
         floor_id: isFloorPlan ? floor?.id ?? null : null,
         floor: isFloorPlan && floor ? floorLabel(floor) : null,
-        floor_code: isFloorPlan && floor ? floorCodeOf(floor) : null,
+        // [调整 2026-09-17] 楼层编码即楼层号本身（F3 / B1）
+        floor_code: isFloorPlan && floor ? floor.floor_number : null,
         description: v.description,
       };
       setSaving(true);
@@ -202,31 +206,57 @@ const PlanSettings: React.FC = () => {
     return false;
   };
 
+  /**
+   * [调整 2026-09-17] 列宽收敛，消除横向滚动。
+   *
+   * 原问题：Table 未设 tableLayout（默认 auto 布局），而「名称 / 院区·楼栋 / 描述」
+   * 三列都没有宽度 —— 名称或描述稍长就会把表格撑出容器，出现左右拖动。
+   *
+   * 处理：
+   *   1) 每列都设固定宽度（描述列由 tableLayout="fixed" 自动获得剩余空间）；
+   *   2) 名称 / 院区·楼栋 / 关联楼层 / 描述 加 ellipsis，超长以省略号收尾
+   *      （注意：auto 布局下 ellipsis 不会真正截断，必须配合列宽与 fixed 布局）；
+   *   3) Table 设 tableLayout="fixed"，严格遵守列宽，不再被内容撑宽。
+   *
+   * 固定列合计 710px，描述列在 1000px 容器下仍可分到约 290px。
+   */
   const columns = [
     {
       title: '缩略图',
       dataIndex: 'image_url',
       key: 'image_url',
-      width: 80,
+      // [调整 2026-09-19] 72 → 84：该列是全表最窄列，72px 减去左右内边距后
+      // 仅剩 48px，正好卡在表头「缩略图」三个字（约 42px）的临界点上，
+      // 稍有字号/字重变化就会溢出到相邻列。加宽到 84 后表头与缩略图都从容。
+      width: 84,
       render: (url?: string) => (
         <SafeImage
           src={url || null}
           alt="平面图"
-          style={{ width: 56, height: 40, objectFit: 'cover', borderRadius: 6 }}
+          style={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 6 }}
         />
       ),
     },
-    { title: '名称', dataIndex: 'name', key: 'name', render: (t: string) => <Text strong>{t}</Text> },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 160,
+      ellipsis: true,
+      render: (t: string) => <Text strong>{t}</Text>,
+    },
     {
       title: '类别',
       dataIndex: 'category',
       key: 'category',
-      width: 100,
+      width: 88,
       render: (c: string) => <Tag color={c === '院区平面' ? 'blue' : 'cyan'}>{c}</Tag>,
     },
     {
       title: '院区/楼栋',
       key: 'location',
+      width: 150,
+      ellipsis: true,
       render: (_: any, r: FloorPlan) => (
         <span>{r.campus || '-'}{r.building ? ` / ${r.building}` : ''}</span>
       ),
@@ -234,7 +264,8 @@ const PlanSettings: React.FC = () => {
     {
       title: '关联楼层',
       key: 'floor',
-      width: 150,
+      width: 120,
+      ellipsis: true,
       render: (_: any, r: FloorPlan) => (
         <span>
           {r.floor || r.floor_code || '-'}
@@ -244,11 +275,19 @@ const PlanSettings: React.FC = () => {
         </span>
       ),
     },
-    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true, render: (t?: string) => t || '-' },
+    {
+      // [调整 2026-09-17] 描述为自由文本：不设宽度，由 tableLayout="fixed" 分得剩余空间，
+      // 超出以省略号收尾（原先无宽度时会被长文本撑宽整张表）
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+      ellipsis: true,
+      render: (t?: string) => t || '-',
+    },
     {
       title: '操作',
       key: 'actions',
-      width: 130,
+      width: 120,
       render: (_: any, r: FloorPlan) => (
         <Space size="small">
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
@@ -311,6 +350,9 @@ const PlanSettings: React.FC = () => {
           dataSource={plans}
           rowKey="id"
           loading={loading}
+          // [新增 2026-09-17] 固定表格布局：严格遵守列宽，长文本由 ellipsis 截断，
+          // 不再把表格撑出容器（这是原先需要左右拖动的根因）
+          tableLayout="fixed"
           pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
         />
       </Card>
@@ -389,7 +431,7 @@ const PlanSettings: React.FC = () => {
                 disabled={!selBuildingId}
                 showSearch
                 optionFilterProp="label"
-                options={floors.map((f) => ({ value: f.id, label: `${floorLabel(f)}（${floorCodeOf(f)}）` }))}
+                options={floors.map((f) => ({ value: f.id, label: floorLabel(f) }))}
               />
             </Form.Item>
           )}
@@ -405,8 +447,8 @@ const PlanSettings: React.FC = () => {
             >
               <div
                 style={{
-                  border: '1px dashed #d9d9d9', borderRadius: 8, padding: 16,
-                  textAlign: 'center', cursor: 'pointer', color: '#5C6B7A',
+                  border: '1px dashed var(--line-soft)', borderRadius: 8, padding: 16,
+                  textAlign: 'center', cursor: 'pointer', color: 'var(--text-2)',
                 }}
               >
                 {imagePreview ? (

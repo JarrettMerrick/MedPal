@@ -49,16 +49,16 @@ const STYLES = {
   formItem: { marginBottom: 16 } as React.CSSProperties,
   label: { fontSize: 12, display: 'block' as const, marginBottom: 4 } as React.CSSProperties,
   input: { marginTop: 4, width: '100%' } as React.CSSProperties,
-  sectionTitle: { marginBottom: 12, paddingTop: 16, borderTop: '1px solid #f0f0f0' } as React.CSSProperties,
+  sectionTitle: { marginBottom: 12, paddingTop: 16, borderTop: '1px solid var(--line-softer)' } as React.CSSProperties,
   emptyText: { display: 'block' as const, textAlign: 'center' as const, padding: '16px 0' } as React.CSSProperties,
-  cardItem: { marginBottom: 12, background: '#FAFAFA', position: 'relative' as const } as React.CSSProperties,
+  cardItem: { marginBottom: 12, background: 'var(--neu-page-bg)', position: 'relative' as const } as React.CSSProperties,
   // [修复 2026-09-05] 补充缺失的 cardContent 样式（TS2339）：用于卡片内单个字段行（名称/简介等）
   cardContent: { marginBottom: 12 } as React.CSSProperties,
   gridImages: { display: 'grid' as const, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 } as React.CSSProperties,
   image: { width: '100%', height: 250, objectFit: 'contain' as const } as React.CSSProperties,
   imageCaption: { padding: '4px 6px' } as React.CSSProperties,
-  addButton: { color: '#52C41A', borderColor: '#52C41A' } as React.CSSProperties,
-  restrictedText: { color: '#999' } as React.CSSProperties,
+  addButton: { color: 'var(--ok)', borderColor: 'var(--ok)' } as React.CSSProperties,
+  restrictedText: { color: 'var(--text-3)' } as React.CSSProperties,
 };
 
 const DepartmentForm: React.FC = () => {
@@ -296,9 +296,9 @@ const DepartmentForm: React.FC = () => {
         <Title level={5} style={STYLES.formItem}>基本信息</Title>
         <div style={STYLES.formItem}>
           <Text type="secondary" style={STYLES.label}>
-            科室名称 {isRestricted ? <span style={{ color: '#999' }}>(仅管理员可修改)</span> : '*'}
+            科室名称 {isRestricted ? <span style={{ color: 'var(--text-3)' }}>(仅管理员可修改)</span> : '*'}
           </Text>
-          <Input value={name} onChange={e => setName(e.target.value)} readOnly={isRestricted} placeholder={isRestricted ? '仅管理员可修改' : '请输入科室名称'} style={isRestricted ? { background: '#f5f5f5', color: '#999' } : undefined} />
+          <Input value={name} onChange={e => setName(e.target.value)} readOnly={isRestricted} placeholder={isRestricted ? '仅管理员可修改' : '请输入科室名称'} style={isRestricted ? { background: 'var(--neu-page-bg)', color: 'var(--text-3)' } : undefined} />
         </div>
         <div style={STYLES.formItem}>
           <Text type="secondary" style={STYLES.label}>
@@ -311,7 +311,7 @@ const DepartmentForm: React.FC = () => {
           <Text type="secondary" style={STYLES.label}>
             允许的工种（可选）
           </Text>
-          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
             不选则按科室分类默认规则；选择后只允许列表中的工种人员加入该科室
           </Text>
           <Checkbox.Group
@@ -367,7 +367,7 @@ const DepartmentForm: React.FC = () => {
                 <TextArea value={spec.detail} onChange={e => updateSpecialty(idx, 'detail', e.target.value)} rows={2} placeholder="请输入详细简介" style={STYLES.input} />
               </div>
               {/* 图片区 */}
-              <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+              <div style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <Text style={{ fontSize: token.fontSizeSM, color: token.colorTextSecondary }}>技术图片（{totalImages}/6）{!specId && pending.length > 0 && <Text type="warning" style={{ fontSize: token.fontSizeSM }}>（保存后自动上传）</Text>}</Text>
                   {totalImages < 6 && (
@@ -421,7 +421,7 @@ const DepartmentForm: React.FC = () => {
                 <TextArea value={equip.features} onChange={e => updateEquipment(idx, 'features', e.target.value)} rows={2} placeholder="请输入设备特点" style={{ marginTop: 4 }} />
               </div>
               {/* 图片区 */}
-              <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+              <div style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <Text style={{ fontSize: token.fontSizeSM, color: token.colorTextSecondary }}>设备图片（{totalImages}/6）{!equipId && pending.length > 0 && <Text type="warning" style={{ fontSize: token.fontSizeSM }}>（保存后自动上传）</Text>}</Text>
                   {totalImages < 6 && <Button size="small" type="link" loading={uploadingEquip === idx} onClick={() => equipFileInputRefs.current[idx]?.click()}>+ 上传图片</Button>}
@@ -445,11 +445,11 @@ const DepartmentForm: React.FC = () => {
             </Card>
           );
         })}
-        <Button block type="dashed" icon={<PlusOutlined />} onClick={addEquipment} style={{ color: '#52C41A', borderColor: '#52C41A' }}>添加特色设备</Button>
+        <Button block type="dashed" icon={<PlusOutlined />} onClick={addEquipment} style={{ color: 'var(--ok)', borderColor: 'var(--ok)' }}>添加特色设备</Button>
 
         {error && <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} style={{ marginTop: 16 }} />}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--line-softer)' }}>
           <Button onClick={() => navigate(returnTo || '/departments')}>取消</Button>
           <Button type="primary" loading={loading} onClick={handleSubmit}>保存</Button>
         </div>

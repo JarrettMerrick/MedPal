@@ -14,6 +14,8 @@ from app.dependencies import (
     PERM_SIGNAGE_VIEW, PERM_SIGNAGE_INSPECTION,
     # [新增 2026-09-08] 巡检越权科室校验：基于角色科室作用域
     get_user_department_scope, _get_role_dept_scope,
+    # [修复 2026-09-17] 巡检照片上传补科室范围校验
+    check_signage_department_access,
 )
 from app.models.user import User
 from app.models.department import Department
@@ -72,35 +74,27 @@ import uuid
 from fastapi import File, UploadFile
 from app.utils import utc_now
 from app.services.upload_service import (
+    # [重构 2026-09-21 / Q-7] 照片的校验与保存统一走公共实现
+    # （校验类型/大小/魔数 + 落盘 + 路径穿越断言 + 生成缩略图）
+    save_validated_photo,
     validate_image_file, detect_image_format, MAX_FILE_SIZE, UPLOAD_ROOT,
+    generate_thumbnail,
 )
 
 
 def _save_inspection_photo(signage_code: str, file: UploadFile) -> str:
-    """校验并保存巡检照片，返回可访问的相对路径（如 /uploads/inspection/xxx.jpg）"""
-    validate_image_file(file)
-    content = file.file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件大小超过限制，最大允许 {settings.upload_max_size_mb}MB",
-        )
-    real_format = detect_image_format(content)
-    if real_format not in ("JPEG", "PNG", "WebP"):
-        raise HTTPException(status_code=400, detail="仅支持 JPG/PNG/WebP 格式")
-    ext = {"JPEG": ".jpg", "PNG": ".png", "WebP": ".webp"}[real_format]
-    dir_path = os.path.join(UPLOAD_ROOT, "inspection")
-    os.makedirs(dir_path, exist_ok=True)
-    filename = f"{signage_code}_{utc_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
-    with open(os.path.join(dir_path, filename), "wb") as f:
-        f.write(content)
-    # 路径穿越防护：assert 解析后仍位于上传根目录内
-    real_root = os.path.realpath(UPLOAD_ROOT)
-    real_abs = os.path.realpath(os.path.join(dir_path, filename))
-    if real_abs != real_root and not real_abs.startswith(real_root + os.sep):
-        raise HTTPException(status_code=400, detail="非法文件路径")
-    # [修复 2026-09-07] 返回相对路径不带 uploads/ 前缀，与 getOriginalUrl 的 /uploads/{path} 约定一致
-    return f"inspection/{filename}"
+    """校验并保存巡检照片，返回可访问的相对路径（如 inspection/xxx.jpg）。
+
+    [重构 2026-09-21 / 代码质量审计 Q-7] 原实现把「校验 + 落盘 + 路径穿越断言 +
+    生成缩略图」整段写在函数内，与 signage_alerts 的维修照片保存逐行重复（约 30 行）。
+    该重复此前已造成过实际缺陷：缩略图只在其中一处补上，另一处漏了。
+    现改为调用公共实现 upload_service.save_validated_photo —— 保留本函数名是为了
+    不触动既有调用点，同时保证"缩略图"这类步骤今后不可能被单边遗漏。
+
+    文件名前缀沿用标识编码（如 RC-QYBS-01-01-001_20260917_...jpg），便于人工排查时
+    从文件名直接看出照片属于哪个标识。
+    """
+    return save_validated_photo(file, subdir="inspection", name_prefix=signage_code)
 
 
 class InspectionCreate(BaseModel):
@@ -143,7 +137,12 @@ def create_inspection(
                 record_audit(db, "signage_inspection_denied", current_user.employee_id,
                              detail=f"code={s.code}, dept={dept_name}", target=str(s.id), ip_address=client_ip)
                 db.commit()
-            except Exception: pass
+            except Exception:
+                # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+                # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+                logger.warning(
+                    "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+                )
             return {
                 "ok": False,
                 "warning": True,
@@ -158,7 +157,12 @@ def create_inspection(
                      detail=f"code={s.code}, result={rec.result}, photo={'有' if rec.photo else '无'}",
                      target=str(s.id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.inspection_submitted）
     _notify_inspection(db, current_user, s, rec)
     return {
@@ -185,9 +189,16 @@ async def upload_inspection_photo(
     current_user: User = Depends(require_any_permission(PERM_SIGNAGE_INSPECTION)),
     db: Session = Depends(get_db),
 ):
-    """上传巡检现场照片（客户端已压缩），返回相对路径"""
-    if not signage_service.get_signage_by_code(db, signage_code):
+    """上传巡检现场照片（客户端已压缩），返回相对路径。
+
+    [修复 2026-09-17] 补科室数据范围校验（与提交巡检的科室判定一致）：
+    原先任意持有 signage.inspection 的账号可为其他科室标识上传照片并落盘，
+    而提交巡检端点对非本科室标识已有拦截，两者口径不一致。
+    """
+    s = signage_service.get_signage_by_code(db, signage_code)
+    if not s:
         raise HTTPException(status_code=404, detail="标识不存在，请检查编号是否正确")
+    check_signage_department_access(db, current_user, s)
     try:
         file_path = _save_inspection_photo(signage_code, file)
     except Exception as e:
@@ -199,7 +210,12 @@ async def upload_inspection_photo(
         record_audit(db, "signage_inspection_photo", current_user.employee_id,
                      detail=f"code={signage_code}, file={file.filename}", target=signage_code, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return {"file_path": file_path}
 
 
@@ -223,7 +239,12 @@ def list_inspections(
         end = beijing_date_start_utc(end_date, end_of_day=True) if end_date else None
     except ValueError:
         raise HTTPException(status_code=422, detail="日期格式应为 YYYY-MM-DD")
-    items, total = signage_service.get_inspections(db, page, page_size, code, inspector, start, end)
+    # [修复 2026-09-17] 按角色科室作用域过滤巡检历史（原先受限角色可检索全院巡检记录及照片路径）
+    allowed = None
+    if _get_role_dept_scope(current_user) != "all":
+        allowed = get_user_department_scope(current_user, db)
+    items, total = signage_service.get_inspections(db, page, page_size, code, inspector, start, end,
+                                                   allowed_department_ids=allowed)
     out = []
     for r in items:
         s = r.signage

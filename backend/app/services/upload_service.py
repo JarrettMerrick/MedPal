@@ -1,7 +1,9 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 import os
+import time as _time
 import uuid
 import re
 from pathlib import Path
@@ -13,6 +15,8 @@ from PIL import Image
 import io
 
 from app.config import DATA_ROOT, settings
+
+logger = logging.getLogger(__name__)
 
 # 允许的图片类型
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -46,11 +50,98 @@ SIGNAGE_DESIGN_TYPES = {"image/jpeg", "image/png", "image/webp", "application/po
 # 仅禁止路径遍历字符（斜杠、反斜杠、点），防止构造恶意路径
 SIGNAGE_CODE_PATTERN = re.compile(r'^[^/\\.\x00]+$')
 
+# ---- 孤儿清理的两道安全阀（见 delete_orphan_files 文档） ----
+
+# 安全阀①：新文件保护期（小时）。mtime 在此窗口内的文件一律不清理。
+# 取值 24 的理由：覆盖"上传落盘 → 数据库提交"的正常窗口（秒级）绰绰有余，
+# 同时给误判留出人工发现的缓冲 —— 即便某天清理逻辑出问题，
+# 也有一整天时间在数据被删前发现（照片类数据的清理并不要求及时性）。
+NEW_FILE_GRACE_HOURS = 24
+
+# 安全阀②：目录级异常保护的触发下限。
+# 某目录待删数 ≥ 该值、且待删数占比过半时，判定为异常并跳过整个目录。
+# 取 10 的理由：小目录（如只有 2~3 个废弃文件）的比例天然容易过半，
+# 若不加数量下限，这类目录会被永久跳过而无法回收；
+# 而真正的"漏登记字段"误判通常是整批（几十上百个），必然远超 10。
+_ABNORMAL_DIR_MIN_COUNT = 10
+
 
 def ensure_upload_dirs():
-    """确保上传目录存在"""
-    for sub_dir in ("doctor", "nurse", "technician", "admin", "card", "dept", "floor_plan", "signage"):
+    """确保上传目录存在。
+
+    [新增 2026-09-17] 追加 files 子目录：文件库（设计文件集中管理）的落盘位置。
+    """
+    for sub_dir in (
+        "doctor", "nurse", "technician", "admin", "card", "dept", "floor_plan",
+        "signage", "files",
+    ):
         os.makedirs(os.path.join(UPLOAD_ROOT, sub_dir), exist_ok=True)
+
+
+def save_validated_photo(file: UploadFile, subdir: str, name_prefix: str | None = None) -> str:
+    """校验并保存一张上传照片，返回相对 uploads 的路径（如 "inspection/xxx.jpg"）。
+
+    [新增 2026-09-21 / 代码质量审计 Q-7] 此前"校验 + 落盘 + 路径穿越断言 + 生成缩略图"
+    这套流程在四处各写了一遍（约 30 行/处）：
+        routers/signage_inspections.py  _save_inspection_photo
+        routers/signage_alerts.py       _save_repair_photo
+        routers/departments.py          科室图片（两处）
+
+    这不是"看着重复"而已 —— **它已经造成过实际缺陷**：这些实现中只有部分
+    调用了 generate_thumbnail，导致巡检/维修照片长期没有缩略图（前端 SafeImage
+    先 404 再回退原图，既刷控制台噪声又多下载一张大图）。当时正是因为
+    "改了一处、漏了另一处"。收敛到本函数后，缩略图等步骤不可能再被漏掉。
+
+    参数:
+        file:        上传文件对象
+        subdir:      落盘子目录（如 "inspection" / "repair" / "dept"）
+        name_prefix: 文件名前缀；省略时用子目录名（如 repair_2026...jpg）
+                     巡检照片会传入标识编码作为前缀，便于人工排查时辨认归属
+
+    返回:
+        相对 uploads 的路径（不含前导斜杠），与 getOriginalUrl 的 /uploads/{path} 约定一致。
+
+    抛出:
+        HTTPException 400 —— 文件类型不受支持、超限、或落盘后路径越界。
+    """
+    validate_image_file(file)
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件大小超过限制，最大允许 {settings.upload_max_size_mb}MB",
+        )
+
+    # 按魔数判断真实格式（比 content_type 可靠，能识别 CMYK/ProPhoto 等变体编码）
+    real_format = detect_image_format(content)
+    if real_format not in ("JPEG", "PNG", "WebP"):
+        raise HTTPException(status_code=400, detail="仅支持 JPG/PNG/WebP 格式")
+    ext = {"JPEG": ".jpg", "PNG": ".png", "WebP": ".webp"}[real_format]
+
+    dir_path = os.path.join(UPLOAD_ROOT, subdir)
+    os.makedirs(dir_path, exist_ok=True)
+    prefix = name_prefix or subdir
+    filename = f"{prefix}_{utc_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
+    absolute_path = os.path.join(dir_path, filename)
+
+    with open(absolute_path, "wb") as f:
+        f.write(content)
+
+    # 路径穿越防护：断言解析后的真实路径仍位于上传根目录内
+    real_root = os.path.realpath(UPLOAD_ROOT)
+    real_abs = os.path.realpath(absolute_path)
+    if real_abs != real_root and not real_abs.startswith(real_root + os.sep):
+        # 落盘已发生，先清理再报错，避免留下一个越界文件
+        try:
+            os.remove(absolute_path)
+        except OSError as rm_err:
+            logger.warning("清理越界文件失败: %s", rm_err, exc_info=True)
+        raise HTTPException(status_code=400, detail="非法文件路径")
+
+    # 生成展示用缩略图（thumb_ 前缀）：前端 SafeImage 统一请求缩略图路径
+    generate_thumbnail(absolute_path)
+
+    return f"{subdir}/{filename}"
 
 
 def validate_image_file(file: UploadFile) -> None:
@@ -67,7 +158,11 @@ def validate_image_file(file: UploadFile) -> None:
                 file.file.seek(0)
             head = head_bytes
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     if head:
         real_format = detect_image_format(head)
@@ -110,7 +205,11 @@ def validate_design_file(file: UploadFile) -> None:
                 file.file.seek(0)
             head = head_bytes
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     
     if head:
         real_format = detect_image_format(head)
@@ -208,8 +307,7 @@ def convert_to_rgb(file_path: str) -> None:
             # JPEG 用较高质量重编码，避免 CMYK→RGB 后画质损失
             rgb_img.save(file_path, quality=92, optimize=True)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"RGB 色空间转换失败，保留原文件: {e}")
+        logger.warning(f"RGB 色空间转换失败，保留原文件: {e}", exc_info=True)
 
 
 async def save_upload_file(
@@ -297,10 +395,11 @@ async def save_upload_file(
         except HTTPException:
             raise
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"PIL无法解析图片文件 (filename={file.filename}, content_type={file.content_type}, "
-                         f"size={len(content)}bytes): {type(e).__name__}: {e}")
+            # [修正 2026-09-19] ERROR → WARN：用户上传损坏或不受支持的图片属**入参错误**，
+            # 已通过下方 HTTP 400 明确反馈给调用方，不是服务端故障。
+            # 按规范「用户输入参数错误」应记 WARN，打 ERROR 会污染告警通道。
+            logger.warning(f"PIL无法解析图片文件 (filename={file.filename}, content_type={file.content_type}, "
+                           f"size={len(content)}bytes): {type(e).__name__}: {e}", exc_info=True)
             raise HTTPException(
                 status_code=400,
                 detail=f"无法读取图片文件，请确保图片未损坏且为JPG/PNG/WebP格式（支持RGB/CMYK编码）（错误: {type(e).__name__}）"
@@ -557,8 +656,60 @@ def generate_thumbnail(file_path: str):
                 if os.path.getsize(thumb_path) < 1024 * 1024:
                     break
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"缩略图生成失败: {e}")
+        logger.warning(f"缩略图生成失败: {e}", exc_info=True)
+
+
+def ensure_missing_thumbnails() -> dict:
+    """为主图补齐缺失的缩略图（幂等）。
+
+    [新增 2026-09-17] 背景：维修照片（repair/）与巡检照片（inspection/）的上传接口
+    早期只把原图写盘、未生成 thumb_ 缩略图；而前端 SafeImage 统一按 thumb_ 路径请求，
+    于是每次展示都要「先 404 → 再回退原图」，既产生控制台噪声，又白白多下载一张大图。
+
+    上传接口已修复（新增照片会一并生成缩略图），本函数用于**补齐存量文件**。
+
+    规则：
+    - 跳过 thumb_ / orig_ 派生文件（它们自身不是主图）；
+    - 跳过 _chunks（分片上传临时目录）与 richtext（富文本正文图片，
+      由 HTML 直接引用原图，无缩略图诉求）；
+    - 只处理位图扩展名；SVG 为矢量图，按既有约定不生成位图缩略图；
+    - 幂等：已有缩略图的主图只做一次 stat 判断，不会重复生成、不产生写入；
+    - 单张失败不影响其它文件（generate_thumbnail 内部已兜底，此处再加一层）。
+
+    返回 {"scanned": 扫描的主图数, "generated": 补齐数, "failed": 失败数}
+    """
+    stats = {"scanned": 0, "generated": 0, "failed": 0}
+    upload_root = Path(UPLOAD_ROOT)
+    if not upload_root.is_dir():
+        return stats
+
+    for file_path in upload_root.rglob("*"):
+        if not file_path.is_file():
+            continue
+        name = file_path.name
+        if name.startswith("thumb_") or name.startswith(ORIG_PREFIX):
+            continue
+        # 跳过临时/正文目录（与孤儿清理口径保持一致）
+        rel_parts = file_path.relative_to(upload_root).parts
+        if rel_parts and rel_parts[0] in ("_chunks", "richtext"):
+            continue
+        if file_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+            continue  # 含 .svg：矢量图不生成位图缩略图
+
+        stats["scanned"] += 1
+        absolute = str(file_path)
+        if os.path.exists(get_thumbnail_path(absolute)):
+            continue
+        try:
+            generate_thumbnail(absolute)
+            if os.path.exists(get_thumbnail_path(absolute)):
+                stats["generated"] += 1
+            else:
+                stats["failed"] += 1
+        except Exception as e:
+            stats["failed"] += 1
+            logger.warning(f"补齐缩略图失败 {file_path}: {e}", exc_info=True)
+    return stats
 
 
 # ====== 孤儿图片清理 ======
@@ -630,118 +781,229 @@ def build_referenced_set(db) -> set[str]:
         if row.photo_url:
             referenced.add(row.photo_url)
 
+    # [修复 2026-09-21 / 存储审计 D-1] 7. 补齐四类此前遗漏的图片引用。
+    #
+    # ⚠️ 这是一个**已造成数据丢失**的缺陷，不是潜在风险：
+    #    清理任务按「磁盘有、引用集合无 → 删除」判定孤儿，而下面这些字段此前
+    #    不在引用集合中，于是它们引用的文件**每天凌晨都会被当作孤儿物理删除**，
+    #    且 uploads/ 不在备份范围内（见存储审计 D-4），删后无法恢复。
+    #
+    #    受影响目录与字段：
+    #      uploads/inspection/ ← SignageInspection.photo（巡检现场照片）
+    #      uploads/repair/     ← SignageRepair.repair_photo / repair_photo_before
+    #                            （维修完成照 / 维修前照）
+    #      uploads/files/      ← DesignFile.stored_path（文件库当前版本）
+    #                            DesignFileVersion.stored_path（历史版本）
+    #
+    # ⚠️ 维护提示：**今后任何新增「存图片/文件相对路径」的模型字段，都必须在此登记**，
+    #    否则会重现本问题。下方 delete_orphan_files 中的「目录级异常保护」是为此
+    #    类遗漏准备的兜底防线（大批量误判时会拒绝执行并告警），但它只是保险，
+    #    不能替代正确登记。
+    from app.models.signage import SignageInspection, SignageRepair
+    for row in db.query(SignageInspection.photo).all():
+        if row.photo:
+            referenced.add(row.photo)
+    for row in db.query(SignageRepair.repair_photo, SignageRepair.repair_photo_before).all():
+        if row.repair_photo:
+            referenced.add(row.repair_photo)
+        if row.repair_photo_before:
+            referenced.add(row.repair_photo_before)
+
+    # 文件库（设计文件）当前版本与历史版本。stored_path 存的是相对 uploads 的路径，
+    # 与 referenced 集合口径一致（如 signage/南-XX-0-001_design_2026...ai）。
+    from app.models.design_file import DesignFile, DesignFileVersion
+    for row in db.query(DesignFile.stored_path).all():
+        if row.stored_path:
+            referenced.add(row.stored_path)
+    for row in db.query(DesignFileVersion.stored_path).all():
+        if row.stored_path:
+            referenced.add(row.stored_path)
+
     return referenced
 
 
 def delete_orphan_files(referenced: set[str]) -> dict:
     """删除磁盘上存在但数据库不引用的孤儿图片及对应缩略图。
-    
+
     [改进] 关联文件孤儿清理：扫描所有 thumb_* / orig_* 文件，若其对应的正式图路径
     不在 referenced 集合中，则一并删除。解决备份恢复后缩略图/原始副本残留的问题。
-    
+
+    [重构 2026-09-21 / 存储审计 D-1] 由「边扫边删」改为「三阶段：收集 → 审查 → 删除」，
+    并加两道安全阀。原因是该函数此前**已造成数据丢失**：build_referenced_set 漏登记
+    几个图片字段，导致它们引用的文件每天被当作孤儿删除，而 uploads 不在备份范围内。
+
+    两道安全阀（都是为「引用集合不完整」这一根本脆弱性准备的兜底，不能替代正确登记）：
+
+      ① 新文件保护期（NEW_FILE_GRACE_HOURS）：跳过 mtime 在 24 小时内的文件。
+         上传流程是「文件先落盘、数据库记录后提交」，清理恰在窗口内运行会删掉
+         刚上传的照片；保护期同时给"误判"留出人工发现的缓冲（存储审计 D-9）。
+
+      ② 目录级异常保护（_abnormal_dirs）：若某目录下**过半**待删且待删数 ≥ 10，
+         判定为异常，**整个目录跳过不删**并告警。
+         理由：漏登记字段的典型表现就是"某一类文件被整批误判"。单看总量不易察觉，
+         但按目录看会非常明显（如 uploads/repair/ 下 30 个文件全被判为孤儿）。
+         此时宁可少清理（残留占磁盘）也不能错删（数据不可恢复）。
+
     Args:
         referenced: 数据库引用的相对路径集合（由 build_referenced_set 生成）
-    
+
     Returns:
-        清理统计信息 {deleted: int, thumbs_deleted: int, total_orphans: int, total_bytes_freed: int}
+        清理统计信息 {deleted, thumbs_deleted, origs_deleted, total_orphans,
+        total_bytes_freed, skipped_dirs, skipped_by_age}
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    orphan_count = 0
-    orphan_thumb_count = 0
-    orphan_orig_count = 0
-    freed_bytes = 0
-    
     upload_root = Path(UPLOAD_ROOT)
     if not upload_root.is_dir():
-        return {"deleted": 0, "thumbs_deleted": 0, "total_orphans": 0, "total_bytes_freed": 0}
+        return {
+            "deleted": 0, "thumbs_deleted": 0, "origs_deleted": 0,
+            "total_orphans": 0, "total_bytes_freed": 0,
+            "skipped_dirs": [], "skipped_by_age": 0,
+        }
+
+    # 保护期阈值：24 小时。用时间戳比较，避免依赖文件系统时区处理。
+    grace_seconds = NEW_FILE_GRACE_HOURS * 3600
+    now_ts = _time.time()
+
+    # ── 阶段 1：扫描并收集待删候选（此阶段不删除任何文件）──
+    # 元组结构：(相对路径, 绝对路径 Path, 类别, 文件大小)
+    #   类别取值 "main" | "thumb" | "orig"
+    candidates: list[tuple[str, Path, str, int]] = []
+    dir_total: dict[str, int] = {}  # 各目录下的图片文件总数（用于计算待删比例）
+    skipped_by_age = 0
 
     for file_path in upload_root.rglob("*"):
         if not file_path.is_file():
             continue
+
+        relative = str(file_path.relative_to(upload_root)).replace("\\", "/")
         # 跳过 _chunks（分片上传临时）与 richtext（富文本正文图片，HTML 内引用、
         # 无法纳入引用集合）目录，避免误删
-        relative = str(file_path.relative_to(upload_root))
         if relative.startswith("_chunks") or relative.startswith("richtext"):
             continue
 
-        # 只处理图片类型文件（跳过 .gitkeep 等非图片）
+        # 只处理图片类型文件（跳过 .gitkeep、设计文件库里的 .ai/.psd 等非图片 ——
+        # 那些由数据库引用直接管理，不参与图片孤儿判定）
         ext = file_path.suffix.lower()
         if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
             continue
 
+        dir_part = os.path.dirname(relative) or "."
+        dir_total[dir_part] = dir_total.get(dir_part, 0) + 1
+
+        # ── 安全阀 ①：新文件保护期 ──
+        try:
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            continue  # 取不到状态就跳过（宁可少清理）
+        if now_ts - mtime < grace_seconds:
+            skipped_by_age += 1
+            continue
+
+        name = file_path.name
+        rel_prefix = f"{dir_part}/" if dir_part != "." else ""
+
         # [改进] 前缀判断基于文件名（缩略图/原始副本与正式图同目录），
         # 旧实现用 relative.startswith 判断，对 doctor/thumb_x.jpg 这类带目录前缀的文件不命中，
         # 导致缩略图被当孤儿误删、orig_ 副本也会被误删。现按 basename 前缀识别并正确派生主图相对路径。
-        name = file_path.name
-        dir_part = os.path.dirname(relative).replace("\\", "/")
-        rel_prefix = f"{dir_part}/" if dir_part else ""
-
-        # 处理缩略图文件：其对应正式图被引用则保留，否则删除
+        kind: str | None = None
         if name.startswith("thumb_"):
+            # 缩略图：其对应正式图被引用则保留
             main_relative = f"{rel_prefix}{name[len('thumb_'):]}"
             if main_relative not in referenced:
-                try:
-                    size = file_path.stat().st_size
-                    file_path.unlink()
-                    orphan_thumb_count += 1
-                    freed_bytes += size
-                    logger.info(f"已删除孤儿缩略图: {relative} ({size} bytes)")
-                except OSError as e:
-                    logger.warning(f"删除孤儿缩略图失败 {relative}: {e}")
-            continue  # 缩略图已处理，跳过后续逻辑
-
-        # 处理原始副本文件（orig_ 前缀）：其对应正式图被引用则保留，否则删除
-        # [改进] orig_ 扩展名可能与正式图不同（原图 PNG/WebP），按文件名主干匹配 referenced
-        if name.startswith(ORIG_PREFIX):
+                kind = "thumb"
+        elif name.startswith(ORIG_PREFIX):
+            # 原始副本：扩展名可能与正式图不同（原图 PNG/WebP），按文件名主干匹配
             main_stem = os.path.splitext(name[len(ORIG_PREFIX):])[0]
             main_prefix = f"{rel_prefix}{main_stem}"
             is_referenced = any(
                 r == main_prefix or r.startswith(main_prefix + ".") for r in referenced
             )
             if not is_referenced:
+                kind = "orig"
+        elif relative not in referenced:
+            kind = "main"
+
+        if kind is None:
+            continue  # 被正常引用，保留
+
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            size = 0
+        candidates.append((relative, file_path, kind, size))
+
+    # ── 阶段 2：目录级异常保护 ──
+    # 按目录分组统计，识别"整批被判定为孤儿"的可疑目录。
+    from collections import defaultdict
+    by_dir: dict[str, list[tuple[str, Path, str, int]]] = defaultdict(list)
+    for item in candidates:
+        by_dir[os.path.dirname(item[0]) or "."].append(item)
+
+    skipped_dirs: list[str] = []
+    to_delete: list[tuple[str, Path, str, int]] = []
+    for dir_name, items in by_dir.items():
+        total = dir_total.get(dir_name, len(items))
+        # 触发条件：待删数 ≥ 10 且占比过半。两个条件同时满足才认定异常，
+        # 避免把"某目录本来就只有两三个废弃文件"误判为异常而长期不清理。
+        if len(items) >= _ABNORMAL_DIR_MIN_COUNT and len(items) * 2 > total:
+            skipped_dirs.append(f"{dir_name}({len(items)}/{total})")
+            logger.warning(
+                "孤儿清理：目录 %s 中 %d/%d 个文件被判定为孤儿，比例异常，"
+                "已跳过该目录以避免误删。请核查 build_referenced_set 是否漏登记了"
+                "引用该目录文件的模型字段。",
+                dir_name, len(items), total,
+            )
+            continue
+        to_delete.extend(items)
+
+    # ── 阶段 3：执行删除 ──
+    orphan_count = orphan_thumb_count = orphan_orig_count = 0
+    freed_bytes = 0
+
+    for relative, file_path, kind, size in to_delete:
+        try:
+            file_path.unlink()
+        except OSError as e:
+            logger.warning(f"删除孤儿文件失败 {relative}: {e}", exc_info=True)
+            continue
+
+        freed_bytes += size
+        if kind == "thumb":
+            orphan_thumb_count += 1
+            logger.debug(f"已删除孤儿缩略图: {relative} ({size} bytes)")
+        elif kind == "orig":
+            orphan_orig_count += 1
+            logger.debug(f"已删除孤儿原始副本: {relative} ({size} bytes)")
+        else:
+            orphan_count += 1
+            logger.debug(f"已删除孤儿图片: {relative} ({size} bytes)")
+
+            # 同时删除对应的缩略图和原始副本（它们可能已在候选列表中，
+            # 此处用 unlink(missing_ok=True) 兼容两种情形，避免重复计数）
+            for companion in (
+                file_path.parent / f"thumb_{file_path.name}",
+                file_path.parent / f"{ORIG_PREFIX}{file_path.name}",
+            ):
                 try:
-                    size = file_path.stat().st_size
-                    file_path.unlink()
-                    orphan_orig_count += 1
-                    freed_bytes += size
-                    logger.info(f"已删除孤儿原始副本: {relative} ({size} bytes)")
+                    if companion.exists():
+                        companion.unlink()
                 except OSError as e:
-                    logger.warning(f"删除孤儿原始副本失败 {relative}: {e}")
-            continue  # 原始副本已处理，跳过后续逻辑
-
-        if relative not in referenced:
-            try:
-                size = file_path.stat().st_size
-                file_path.unlink()
-                orphan_count += 1
-                freed_bytes += size
-                logger.info(f"已删除孤儿图片: {relative} ({size} bytes)")
-
-                # 同时删除对应的缩略图和原始副本
-                thumb = file_path.parent / f"thumb_{file_path.name}"
-                if thumb.exists():
-                    thumb.unlink()
-                    orphan_thumb_count += 1
-                    logger.info(f"已删除对应缩略图: thumb_{relative}")
-                orig = file_path.parent / f"{ORIG_PREFIX}{file_path.name}"
-                if orig.exists():
-                    orig.unlink()
-                    orphan_orig_count += 1
-                    logger.info(f"已删除对应原始副本: {ORIG_PREFIX}{relative}")
-            except OSError as e:
-                logger.warning(f"删除孤儿图片失败 {relative}: {e}")
+                    logger.warning(f"删除关联文件失败 {companion.name}: {e}", exc_info=True)
 
     total_deleted = orphan_count + orphan_thumb_count + orphan_orig_count
-    logger.info(
-        f"孤儿图片清理完成: 删除 {orphan_count} 张原图 + {orphan_thumb_count} 张缩略图 "
-        f"+ {orphan_orig_count} 张原始副本, 释放 {freed_bytes} bytes"
-    )
+    # [适配 新增] 循环内降为 DEBUG，此处汇总一条 INFO（含安全阀触发情况）
+    if total_deleted or skipped_dirs or skipped_by_age:
+        logger.info(
+            f"孤儿图片清理完成: 删除 {orphan_count} 张原图 + {orphan_thumb_count} 张缩略图 "
+            f"+ {orphan_orig_count} 张原始副本, 释放 {freed_bytes} bytes"
+            + (f"; 保护期内跳过 {skipped_by_age} 个新文件" if skipped_by_age else "")
+            + (f"; ⚠️ 因比例异常跳过目录 {skipped_dirs}" if skipped_dirs else "")
+        )
     return {
         "deleted": orphan_count,
         "thumbs_deleted": orphan_thumb_count,
         "origs_deleted": orphan_orig_count,
         "total_orphans": total_deleted,
         "total_bytes_freed": freed_bytes,
+        "skipped_dirs": skipped_dirs,
+        "skipped_by_age": skipped_by_age,
     }

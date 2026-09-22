@@ -78,11 +78,16 @@ def create_signage(db, data, created_by):
             data.get("building", ""),
             data.get("floor", ""),
         )
+    # [新增 2026-09-17] 分类一致性校验：新建时引用的标准设计文件必须与标识分类一致
+    if data.get("design_file_id"):
+        _validate_design_file_category(db, data.get("category"), data["design_file_id"])
     s=Signage(**data)
     s.created_by=created_by
     s.updated_by=created_by
     db.add(s)
     db.flush()
+    # [新增 2026-09-17] 补设计文件使用名（引用标准设计文件时前端需展示使用名）
+    _attach_design_file_names(db, [s])
     # [修复 2026-09-04] 创建时记录初始快照
     snapshot = _signage_to_snapshot(s)
     h = SignageHistory(
@@ -96,10 +101,89 @@ def create_signage(db, data, created_by):
     return s
 
 
+def _attach_design_file_names(db, signages) -> None:
+    """为标识对象补充 design_file_name（取「文件管理」中为该文件设置的使用名）。
+
+    [新增 2026-09-17] 需求：标识引用标准设计文件时，展示名必须用文件库中的
+    **使用名**（DesignFile.name），而不是从 design_photo 路径截取出的原始落盘名
+    （形如 RC-XX-0-001_design_20260917_101530_ab12cd34.ai，对使用者没有意义）。
+
+    实现要点：
+    - 按 design_file_id 一次性 IN 查询，避免逐行 N+1；
+    - 以普通 Python 属性挂到 ORM 实例（与上方 department_name 同一套做法），
+      供 Pydantic 的 from_attributes 读取，不会写库；
+    - 未引用文件库的标识（design_file_id 为空，如早期直接上传的数据）统一置 None，
+      前端回退到路径文件名，既有行为不倒退。
+    """
+    items = [s for s in (signages or []) if s is not None]
+    if not items:
+        return
+    ids = {s.design_file_id for s in items if getattr(s, "design_file_id", None)}
+    name_map: dict = {}
+    if ids:
+        # 函数内导入，避免 services 与 models 之间的循环引用
+        from app.models.design_file import DesignFile
+        name_map = dict(
+            db.query(DesignFile.id, DesignFile.name).filter(DesignFile.id.in_(ids)).all()
+        )
+    for s in items:
+        s.design_file_name = name_map.get(getattr(s, "design_file_id", None))
+
+
+def _resolve_signage_category_id(db, category_name):
+    """标识分类名 → 标识分类 ID；名称不在分类表中时返回 None（无法判定，跳过校验）。"""
+    name = (category_name or "").strip()
+    if not name:
+        return None
+    from app.models.signage_settings import SignageCategory
+    row = db.query(SignageCategory.id).filter(SignageCategory.name == name).first()
+    return row[0] if row else None
+
+
+def _validate_design_file_category(db, signage_category, design_file_id):
+    """校验被引用的设计文件与标识分类一致。
+
+    [新增 2026-09-17] 需求：标识只能引用与其**分类相同**的标准设计文件
+    （如分类为「折页」的标识，只能引用文件库中归入「折页」的文件），
+    避免跨类别引用造成的数据混乱。
+
+    规则与边界（都在此收敛，避免各调用方口径不一）：
+    - 标识分类名不在标识分类表中（历史自由文本 / 分类已被删除）→ 跳过校验，不误伤存量数据；
+    - 文件记录不存在 → 跳过（由既有逻辑处理）；
+    - 文件未分类、或分类与标识不一致 → 抛 ValueError，由路由转为 400 并给出可操作提示。
+
+    调用时机由上层控制：**仅在「新增引用」或「引用发生变更」时**校验，
+    这样存量跨分类数据在编辑其它字段时不会被阻塞。
+    """
+    target_category_id = _resolve_signage_category_id(db, signage_category)
+    if not target_category_id:
+        return
+
+    from app.models.design_file import DesignFile
+    from app.models.signage_settings import SignageCategory
+
+    record = db.query(DesignFile).filter(DesignFile.id == design_file_id).first()
+    if not record:
+        return
+    if record.category_id == target_category_id:
+        return
+    if record.category_id is None:
+        raise ValueError(
+            f"所选设计文件未设置分类，请先在「文件管理」中将其归入「{signage_category}」分类"
+        )
+    other = db.query(SignageCategory.name).filter(SignageCategory.id == record.category_id).first()
+    other_name = other[0] if other else "其它分类"
+    raise ValueError(
+        f"只能引用与标识分类一致的设计文件：当前标识分类为「{signage_category}」，"
+        f"所选文件属于「{other_name}」"
+    )
+
+
 def get_signage(db, signage_id):
     s = db.query(Signage).options(joinedload(Signage.department)).filter(Signage.id==signage_id).first()
     if s:
         s.department_name = s.department.name if s.department else None
+        _attach_design_file_names(db, [s])
     return s
 
 
@@ -124,6 +208,8 @@ def get_signage_list(db, page=1, page_size=20, search=None, category=None, statu
     items=q.options(joinedload(Signage.department)).order_by(Signage.updated_at.desc()).offset((page-1)*page_size).limit(page_size).all()
     for it in items:
         it.department_name = it.department.name if it.department else None
+    # [新增 2026-09-17] 批量补设计文件使用名（一次 IN 查询，避免逐行 N+1）
+    _attach_design_file_names(db, items)
     return items, total
 
 
@@ -160,6 +246,14 @@ def update_signage(db, signage_id, data, updated_by, oa_number=None, record_hist
     # [修复 2026-09-04] 变更前先生成完整快照
     snapshot = _signage_to_snapshot(s)
 
+    # [新增 2026-09-17] 分类一致性校验：**仅在引用发生变化时**校验 ——
+    # 存量跨分类引用在编辑其它字段（名称/位置等）时不会被阻塞。
+    # 注意必须放在下面的 setattr 循环之前，避免校验失败时留下半更新状态。
+    if "design_file_id" in data:
+        new_file_id = data.get("design_file_id")
+        if new_file_id and new_file_id != s.design_file_id:
+            _validate_design_file_category(db, data.get("category") or s.category, new_file_id)
+
     changed_fields = []
     for key, val in data.items():
         if hasattr(s, key):
@@ -190,6 +284,8 @@ def update_signage(db, signage_id, data, updated_by, oa_number=None, record_hist
         if last_h:
             last_h.snapshot = json.dumps(snapshot, ensure_ascii=False)
 
+    # [新增 2026-09-17] 补设计文件使用名（本次可能刚引用 / 解除了标准设计文件）
+    _attach_design_file_names(db, [s])
     return s
 
 
@@ -200,9 +296,21 @@ def delete_signage(db, signage_id):
     # 设计文件/现场照片及其 thumb_/orig_ 副本（delete_file 无格式限制，可覆盖 .ai/.pdf），
     # 以及照片记录表中非空的 photo_url 文件；避免残留孤儿文件等待每日定时任务兜底
     from app.services.upload_service import delete_file
-    for rel in (s.design_photo, s.installation_photo):
-        if rel:
-            delete_file(rel)
+    # [新增 2026-09-17] 共享引用保护：设计文件可能被其它标识引用（文件库中的标准设计文件
+    # 支持多条标识复用），此时只解除本标识的引用，不清理物理文件，避免影响仍在使用的标识。
+    import logging as _logging
+    design_shared = False
+    try:
+        from app.services.design_file_service import is_path_shared
+        design_shared = bool(s.design_photo) and is_path_shared(
+            db, s.design_photo, exclude_signage_id=signage_id,
+        )
+    except Exception as exc:
+        _logger.warning("删除标识时的共享引用检查失败，按未共享处理: %s", exc)
+    if s.design_photo and not design_shared:
+        delete_file(s.design_photo)
+    if s.installation_photo:
+        delete_file(s.installation_photo)
     for (photo_url,) in db.query(SignagePhoto.photo_url).filter(SignagePhoto.signage_id==signage_id).all():
         if photo_url:
             delete_file(photo_url)
@@ -263,7 +371,10 @@ def get_point_by_signage(db, signage_id, exclude_point_id=None):
 
 def get_signage_by_code(db, code):
     """[新增 2026-09-05] 按标识编码精确查询（移动巡检手输/扫码用）"""
-    return db.query(Signage).filter(Signage.code == code).first()
+    s = db.query(Signage).filter(Signage.code == code).first()
+    if s:
+        _attach_design_file_names(db, [s])
+    return s
 
 
 def create_inspection(db, signage_id, result, inspector, notes=None, photo=None):
@@ -289,8 +400,14 @@ def create_inspection(db, signage_id, result, inspector, notes=None, photo=None)
     return rec
 
 
-def get_inspections(db, page=1, page_size=20, code=None, inspector=None, start=None, end=None):
-    """[新增 2026-09-05] 巡检历史查询：支持编号/人员模糊与提交时间范围过滤"""
+def get_inspections(db, page=1, page_size=20, code=None, inspector=None, start=None, end=None,
+                    allowed_department_ids=None):
+    """[新增 2026-09-05] 巡检历史查询：支持编号/人员模糊与提交时间范围过滤。
+
+    [修复 2026-09-17] 新增 allowed_department_ids 科室范围过滤：原先受限角色
+    （department_scope=own/managed）可按编号/日期检索全院巡检历史（含现场照片路径），
+    与标识列表的科室过滤口径不一致。None=不限；含未归属科室标识的巡检记录。
+    """
     q = db.query(SignageInspection).join(Signage, SignageInspection.signage_id == Signage.id)
     if code:
         q = q.filter(Signage.code.like(f"%{code}%"))
@@ -300,6 +417,8 @@ def get_inspections(db, page=1, page_size=20, code=None, inspector=None, start=N
         q = q.filter(SignageInspection.created_at >= start)
     if end:
         q = q.filter(SignageInspection.created_at <= end)
+    if allowed_department_ids is not None:
+        q = q.filter(or_(Signage.department_id.in_(allowed_department_ids), Signage.department_id.is_(None)))
     total = q.count()
     items = q.order_by(SignageInspection.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return items, total

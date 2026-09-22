@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 # [修复 2026-09-01] 添加 Request 导入，用于获取客户端 IP 地址记录到系统日志
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,8 @@ from app.services.staff_change_service import DEFERRED_FIELDS, submit_change
 from app.schemas.user import UserCreate
 from app.utils import utc_now, get_client_ip
 from app.constants import WORK_TYPE_TO_USER_TYPE
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/staff", tags=["人员管理"])
 
@@ -134,32 +137,30 @@ def list_staff(
     is_all_scope = False  # [改进] 标记是否为全院权限，scope=all 时不按部门名过滤，避免 staff.department 值不在 departments 表中被误排除
 
     # 基于 department_scope 获取可访问的科室（admin_manager 的 scope="all" 自动返回全部）
-    from app.dependencies import _get_role_dept_scope
+    # [重构 2026-09-21 / 代码质量审计 Q-6] 科室范围过滤统一走公共函数
+    # resolve_department_filter（原为四处各写一遍的复制粘贴逻辑）。
+    from app.dependencies import _get_role_dept_scope, resolve_department_filter
+
     scope = _get_role_dept_scope(current_user)
+    allowed_dept_names: list[str] = []
 
     if scope == "all":
         # [改进] scope=all 时仅做权限校验，不设置 department_filter
         # 原因：staff.department 是自由文本字段，可能包含 departments 表中不存在的值（如"普外科/甲乳外科"）或为空，
         # 用 in_ 过滤会遗漏这些人。scope=all 应看到所有人员。
         is_all_scope = True
-        if department:
-            # 用户主动指定了科室筛选——仍需校验该科室是否合法（但不做 in_ 过滤，交给精确匹配）
-            department_filter = department
+        department_filter = department if department else None
     else:
-        managed_dept_ids = get_user_department_scope(current_user, db)
-        if managed_dept_ids:
-            dept_names = [d.name for d in db.query(Department).filter(Department.id.in_(managed_dept_ids)).all()]
-            if dept_names:
-                if department:
-                    if department not in dept_names:
-                        raise HTTPException(status_code=403, detail="无权访问该科室")
-                    department_filter = department
-                else:
-                    department_filter = "||".join(dept_names)
-            else:
-                return StaffListResponse(total=0, items=[], page=page, page_size=page_size)
-        else:
+        department_filter, is_empty = resolve_department_filter(current_user, db)
+        if is_empty:
             return StaffListResponse(total=0, items=[], page=page, page_size=page_size)
+        # 此处用的是"用户主动指定科室"的校验：需确认该科室在其范围内。
+        # 公共函数返回的是拼接串，故先还原为列表用于校验成员关系。
+        allowed_dept_names = (department_filter or "").split("||") if department_filter else []
+        if department:
+            if department not in allowed_dept_names:
+                raise HTTPException(status_code=403, detail="无权访问该科室")
+            department_filter = department
 
     # 工种范围过滤（基于 work_type_scope，scope="all" 时不限制）
     work_type_filter = None
@@ -200,17 +201,12 @@ def list_resigned_staff(
 ):
    """获取离职人员列表（原「员工休息区」，现更名「离职人员」）"""
    # 数据范围过滤（基于 department_scope）
+   # [重构 2026-09-21 / 代码质量审计 Q-6] 统一走公共函数 resolve_department_filter
    # 注意：局部变量名不得用 scope，会覆盖上方的保留期视图查询参数（scope）
-   department_filter = None
-   dept_scope = current_user.role_obj.department_scope if current_user.role_obj else "own"
-   if dept_scope != "all":
-       managed_dept_ids = get_user_department_scope(current_user, db)
-       if managed_dept_ids:
-           dept_names = [d.name for d in db.query(Department).filter(Department.id.in_(managed_dept_ids)).all()]
-           if dept_names:
-               department_filter = "||".join(dept_names)
-       else:
-           return StaffListResponse(total=0, items=[], page=page, page_size=page_size)
+   from app.dependencies import resolve_department_filter
+   department_filter, is_empty = resolve_department_filter(current_user, db)
+   if is_empty:
+       return StaffListResponse(total=0, items=[], page=page, page_size=page_size)
    
    # 工种范围过滤（基于 work_type_scope）
    work_type_filter = None
@@ -236,6 +232,9 @@ def list_resigned_staff(
 @router.get("/department-category")
 def get_department_category(
     work_type: str = Query(..., description="工种"),
+    # [修复 2026-09-17] 补登录校验：原实现无任何 Depends，未认证即可访问
+    # （仅返回静态「工种→部门类别」映射，无业务数据，风险低，但不应对外暴露）
+    current_user: User = Depends(get_current_user),
 ):
     """根据工种获取对应的部门类别"""
     if work_type not in WORK_TYPES:
@@ -373,7 +372,11 @@ def create_staff_endpoint(
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 新增人员此前只写留痕、不产生任何站内信（新人建档无人知悉）。
     # 收件人：超管 + 该人员所属科室的科室管理员（自动排除操作者本人）；
@@ -405,7 +408,11 @@ def create_staff_endpoint(
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return staff
 
@@ -593,7 +600,11 @@ def delete_staff_endpoint(
             ip_address=client_ip,
         )
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 删除人员此前只写留痕、不产生站内信。删除档案会连带清理
     # 照片文件，属不可逆的高敏感操作，现补上提醒（事件：删除人员）：
@@ -623,7 +634,11 @@ def delete_staff_endpoint(
             },
         )
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     db.commit()
 
@@ -632,7 +647,11 @@ def delete_staff_endpoint(
         try:
             _delete_upload_file(p)
         except Exception:
-            pass
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
     return {"message": "删除成功"}
 
 
@@ -704,7 +723,11 @@ def update_staff_status(
             ip_address=client_ip,
         )
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-11] 状态变更通过站内信通知：超管 + 相关科室管理员（自动排除操作者本人）。
     # 离职属于敏感操作（会停用登录账号），必须让管理者知悉。
@@ -751,7 +774,11 @@ def update_staff_status(
                 context=context,
             )
         except Exception:
-            pass
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
 
     db.commit()
 

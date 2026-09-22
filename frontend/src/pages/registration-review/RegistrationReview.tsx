@@ -155,7 +155,14 @@ const RegistrationTable: React.FC = () => {
       },
     },
     {
-      title: '审核信息', key: 'review', width: 220,
+      // [调整 2026-09-19] 去掉固定宽度 220，改为自适应 + 允许换行。
+      // 本表原 8 列全部定宽（合计 1130px），无列可伸缩 → 窄屏必然横向滚动。
+      // 「审核信息」是全表最长的文本列（审核人 + 时间，可能追加拒绝原因），
+      // 交由它吸收剩余空间：宽屏展开、窄屏折行，内容完整可见。
+      title: '审核信息', key: 'review',
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 150 } as React.CSSProperties,
+      }),
       render: (_, record) =>
         record.status === 'pending' ? (
           <Text type="secondary">--</Text>
@@ -225,7 +232,8 @@ const RegistrationTable: React.FC = () => {
         columns={columns}
         dataSource={items}
         loading={loading}
-        scroll={{ x: 1080 }}
+        // [调整 2026-09-19] 移除固定 scroll={{ x: 1080 }}（详见 RepairRecords 的说明）
+        scroll={{ x: 'max-content' }}
         pagination={{
           current: page,
           pageSize: PAGE_SIZE,

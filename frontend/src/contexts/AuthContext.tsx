@@ -12,8 +12,18 @@ interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   isFirstLogin: boolean;
+  /**
+   * [新增 2026-09-17] 是否为「待审核」账号（自助注册后尚未通过审核）。
+   * 为 true 时：后端仅放行认证与本人资料接口，前端据此精简菜单并把用户
+   * 引导到「个人信息」页完善资料、等待审核。
+   */
+  isPendingReview: boolean;
   isLoading: boolean;
-  login: (employeeId: string, password: string, rememberMe?: boolean) => Promise<void>;
+  /**
+   * 登录。[调整 2026-09-17] 返回登录后的用户信息，调用方可据此决定落地页
+   * （待审核账号直接进「个人信息」页，避免先跳到工作台再被重定向的闪烁）。
+   */
+  login: (employeeId: string, password: string, rememberMe?: boolean) => Promise<UserInfo>;
   logout: () => void;
   setUser: (user: UserInfo) => void;
   /** [修复] 应用改密后后端重新签发的令牌（access/file token），保持当前会话在线 */
@@ -89,6 +99,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (res.file_token) setFileToken(res.file_token);
     setToken(res.access_token);
     setUser(res.user);
+    // [调整 2026-09-17] 返回用户信息，供登录页按审核状态决定落地页
+    return res.user;
   };
 
   /**
@@ -123,6 +135,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         isAuthenticated: !!token && !!user,
         isFirstLogin: !!user?.must_change_password,
+        // [新增 2026-09-17] 待审核账号（自助注册）：前端据此精简菜单并引导至「个人信息」页
+        isPendingReview: user?.review_status === 'pending',
         isLoading,
         login,
         logout,

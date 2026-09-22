@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 import re
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
@@ -9,6 +10,30 @@ from app.models.audit_log import ModificationHistory
 from app.models.user import User
 # [统一时间口径] API 时间字段统一用 to_iso_utc（带 Z 的 UTC），前端按浏览器时区转换显示
 from app.utils import utc_now, to_iso_utc
+
+# [修复 2026-09-19] Logger 提升为模块级常量。
+# 原先在 record_audit 内反复执行 `import logging` + `logging.getLogger("audit")`，
+# 既不符合「Logger 应为模块级」的规范，也在异常路径上产生不必要的导入开销。
+logger = logging.getLogger("audit")
+
+# 审计详情中的敏感字段脱敏。
+# audit detail 由各调用方自由拼接（如 f"rule={template}"），无法保证不含口令等机密，
+# 故在**落库与打日志之前**统一兜底脱敏，作为最后一道防线。
+_SENSITIVE_RE = re.compile(
+    r"(password|passwd|pwd|token|secret|口令|密码)\s*[=:]\s*[^\s,;]+",
+    re.IGNORECASE,
+)
+
+
+def mask_sensitive(text: str | None) -> str | None:
+    """把 detail 中「password=xxx」一类的片段替换为「password=***」。
+
+    仅做格式级兜底：命中「关键字 + 分隔符 + 非空白值」即脱敏，
+    正常业务字段（如 ip=、filename=）不受影响。
+    """
+    if not text:
+        return text
+    return _SENSITIVE_RE.sub(lambda m: f"{m.group(1)}=***", text)
 
 
 def record_modification(
@@ -48,7 +73,13 @@ def record_modification(
         db.add(sys_log)
         db.flush()
     except Exception:
-        pass  # 不影响主流程
+        # [修复 2026-09-19] 原为静默 pass。写 SystemLog 失败不应影响主流程
+        # （审计属旁路），但完全不留痕会让「审计缺失」无从发现，
+        # 故降级为 warning 并带堆栈，兼顾「不阻断」与「可定位」。
+        logger.warning(
+            "写入系统日志失败（已忽略，不影响主流程）: entity_type=%s",
+            entity_type, exc_info=True,
+        )
 
     return record
 
@@ -80,7 +111,10 @@ def record_audit(
     说明：复用 ModificationHistory，字段长度受限（entity_id<=50, modified_by<=20），
     故做截断保护；写入后同时输出到应用日志，保证即使数据库被篡改仍有日志留痕。
     """
-    import logging
+    # [修复 2026-09-19] 删除函数内的 `import logging`（logger 已提升为模块级常量）。
+    # 同时统一脱敏：detail 由各调用方自由拼接，无法保证不含口令等机密，
+    # 在**拼接摘要、落库、打日志之前**做一次兜底，避免三处各漏一次。
+    detail = mask_sensitive(detail)
 
     entity_id_val = (target or action or "")[:50]
     actor_val = (actor or "anonymous")[:20]
@@ -97,9 +131,14 @@ def record_audit(
     )
     db.add(record)
     db.flush()
-    # 双写日志，便于实时监控与事后追溯
-    logging.getLogger("audit").info("AUDIT %s by=%s target=%s detail=%s",
-                                    action, actor_val, entity_id_val, detail or "")
+    # 双写日志，便于实时监控与事后追溯。
+    # [修复 2026-09-19] ① 改用模块级 logger（原先每次调用都 import + getLogger）；
+    # ② detail 截断到 500 字，与入库口径一致，避免超长内容拖大日志体积
+    #    （detail 已在上文统一脱敏）。
+    logger.info(
+        "AUDIT %s by=%s target=%s detail=%s",
+        action, actor_val, entity_id_val, (detail or "")[:500],
+    )
 
     # [修复 2026-09-01] 双写到 SystemLog 表，支持系统日志查询/导出功能
     try:
@@ -109,8 +148,12 @@ def record_audit(
         if not ip_val and detail and "ip=" in detail:
             try:
                 ip_val = detail.split("ip=")[1].split()[0]
-            except (IndexError, AttributeError):
-                pass
+            except (IndexError, AttributeError) as e:
+                # [修正 2026-09-21 / 代码质量审计 Q-3] 原为静默 pass。
+                # 这是"从 detail 文本里尽力抽取 IP"的**可选**动作，失败后 ip_val
+                # 保持 None，不影响审计记录本身 —— 因此不需要警告级日志。
+                # 但完全静默会让"IP 为什么是空"无从解释，故降为 debug 留痕。
+                logger.debug("从 detail 中解析 IP 失败（不影响留痕）: %s: %s", type(e).__name__, e)
 
         log_level = "INFO"
         log_category = "operation"
@@ -134,7 +177,11 @@ def record_audit(
         db.add(sys_log)
         db.flush()
     except Exception:
-        pass  # 不影响主流程
+        # [修复 2026-09-19] 同上：审计写入失败不应阻断主流程，但必须留痕
+        logger.warning(
+            "写入系统日志失败（已忽略，不影响主流程）: action=%s", action,
+            exc_info=True,
+        )
 
     return record
 
@@ -174,8 +221,11 @@ def audit_action(
         return True
     except Exception as e:
         db.rollback()
-        logging.getLogger(__name__).warning(
-            f"审计留痕失败 action={action} actor={actor}: {type(e).__name__}: {e}"
+        # [修正 2026-09-19] 统一使用模块级 audit logger（原先此处临时 getLogger(__name__)，
+        # 会落到 app.services.audit_service 名下，与本模块其他审计日志分散在两个 logger 中）
+        logger.warning(
+            f"审计留痕失败 action={action} actor={actor}: {type(e).__name__}: {e}",
+            exc_info=True,
         )
         return False
 

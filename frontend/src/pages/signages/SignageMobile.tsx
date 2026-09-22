@@ -5,8 +5,9 @@
 // ③ 新增巡检历史查询：按时间范围、标识编号（可点击查看标识详情）、巡检人员筛选，
 //    并可查看每次巡检的详细记录（巡检时间、标识状态、提交人等）。
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
-  Card, Tabs, Input, Button, Descriptions, Tag, message, Radio, Table, Modal,
+  App, Card, Tabs, Input, Button, Descriptions, Tag, Radio, Table, Modal,
   DatePicker, Space, Typography, AutoComplete,
 } from 'antd';
 import {
@@ -27,6 +28,8 @@ const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
 const SignageMobile: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   // ===== 巡检打卡 =====
   const [code, setCode] = useState('');
   const [signage, setSignage] = useState<Signage | null>(null);
@@ -67,7 +70,7 @@ const SignageMobile: React.FC = () => {
             label: (
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
                 <span style={{ fontWeight: 600 }}>{s.code}</span>
-                <span style={{ color: '#97A3B2', fontSize: 12 }}>
+                <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
                   {s.name}{[s.campus, s.building].filter(Boolean).join(' / ')}
                 </span>
               </div>
@@ -426,7 +429,7 @@ const SignageMobile: React.FC = () => {
                 <img
                   src={photoPreview}
                   alt="巡检照片预览"
-                  style={{ width: '100%', maxHeight: 280, objectFit: 'contain', borderRadius: 8, background: '#f5f5f5' }}
+                  style={{ width: '100%', maxHeight: 280, objectFit: 'contain', borderRadius: 8, background: 'var(--line-softer)' }}
                 />
                 <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={8}>
                   <Button block icon={<CameraOutlined />} disabled={compressing} onClick={() => cameraInputRef.current?.click()}>

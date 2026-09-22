@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
@@ -11,6 +12,8 @@ from app.services.audit_service import record_audit
 # [新增 2026-09-15] 站内信提醒：批量生成 / 批量改科室后通知管理方（此前只留痕不提醒）
 from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/signage-batch", tags=["标识批量操作"])
 
@@ -57,7 +60,12 @@ def generate_door_signs(req: BatchGenerateRequest, request: Request = None, curr
                      detail=f"building={req.building}, floor={req.floor}, count={len(created)}, oa={req.oa_number}",
                      target=f"{req.building}/{req.floor}", ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_batch_change(
         db, current_user, f"{req.building} {req.floor}",
@@ -76,7 +84,12 @@ def update_department(req: BatchUpdateDeptRequest, request: Request = None, curr
                      detail=f"{req.old_department} → {req.new_department}, count={len(updated)}, oa={req.oa_number}",
                      target=req.new_department, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_batch_change(
         db, current_user, req.new_department,

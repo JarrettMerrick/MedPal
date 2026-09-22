@@ -166,8 +166,10 @@ const PhotoCropper: React.FC<PhotoCropperProps> = ({ file, aspect, onConfirm, on
           position: 'relative',
           width: '100%',
           height: 420,
-          background: '#f0f0f0',
-          borderRadius: 8,
+          /* [改造 2026-09-19] 查看区底色改引用变量，深色下不再刺眼（裁剪框与三分线为
+             功能性可视化元素，保持高对比不变） */
+          background: 'var(--neu-bg)',
+          borderRadius: 'var(--radius-control)',
           overflow: 'hidden',
           touchAction: 'none',
           userSelect: 'none',

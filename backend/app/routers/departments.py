@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 # [修复 2026-09-01] 添加 Request 导入，用于获取客户端 IP 地址记录到系统日志
+import logging
 import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -29,6 +30,10 @@ from app.services.upload_service import save_upload_file, delete_file
 from app.models.department import DepartmentSpecialty, SpecialtyImage, DepartmentEquipment, EquipmentImage
 # [新增 2026-09-09] 统一 IP 获取（兼容反向代理）
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/departments", tags=["科室管理"])
 
@@ -59,6 +64,51 @@ def _work_types_label(raw: str | None) -> str:
     return "、".join(labels) if labels else "未设置"
 
 
+def _apply_image_caption_change(
+    db: Session, request: Request | None, current_user: User, dept,
+    img, caption: str | None, name_model, name_id: int, label: str,
+) -> None:
+    """更新科室图片备注；仅在备注确实变化时写入留痕并发送站内信提醒。
+
+    [新增 2026-09-21 / 代码质量审计 Q-7] 原先这段逻辑在「特色技术图片」与
+    「设备图片」两个接口里逐行重复（各约 25 行，只差查询的模型与文案标签）。
+    其中「仅在变化时才留痕」这个判断尤其关键 —— 前端会回传原值，
+    若不判断就会产生摘要为「xxx → xxx」的无意义留痕与提醒，反而淹没真实变更。
+    收敛到本函数后，这个判断不可能在某个接口里被漏掉。
+
+    参数:
+        img:       图片 ORM 对象（带 caption 字段），就地修改
+        caption:   请求传入的新备注；None 表示"不修改"
+        name_model: 关联名称所属的模型（DepartmentSpecialty / DepartmentEquipment）
+        name_id:    关联对象 ID
+        label:      中文标签，用于留痕摘要（「特色技术」/「设备」）
+
+    说明:
+        关联名称**只在确实需要留痕时才查询** —— 保持原实现的惰性查询，
+        避免每次请求都白查一次库。
+    """
+    # 前端回传原值时，摘要为「xxx → xxx」等于没改，不必留痕与提醒
+    if caption is None or caption == (img.caption or ""):
+        return
+    if len(caption) > 20:
+        raise HTTPException(status_code=400, detail="备注不能超过20字")
+
+    old_caption = img.caption or "未设置"
+    img.caption = caption
+
+    related = db.query(name_model).filter(name_model.id == name_id).first()
+    related_name = related.name if related else f"ID:{name_id}"
+    _record_dept_change(
+        db, request, current_user, dept,
+        change_summary=(
+            f"{label}「{related_name}」图片备注: "
+            f"{old_caption} → {caption or '未设置'}"
+        ),
+        event_code="department.specialty_changed",
+        fallback_title="科室特色技术/设备变更",
+    )
+
+
 def _record_dept_change(
     db: Session, request: Request | None, current_user: User, dept,
     change_summary: str, event_code: str, fallback_title: str,
@@ -85,7 +135,11 @@ def _record_dept_change(
             ip_address=get_client_ip(request) if request is not None else None,
         )
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     try:
         mod_user = get_user(db, current_user.employee_id)
@@ -357,8 +411,7 @@ async def upload_specialty_image(
         raise e
     except Exception as e:
         # [修复/问题6] 内部异常详情不再返回客户端，仅写日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
 
     # 创建图片记录
@@ -406,27 +459,12 @@ def update_specialty_image_caption(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
-    # [修复 2026-09-15] 仅在备注确实变化时才写入，避免前端回传原值时产生无意义的
-    # 留痕与提醒（摘要为「xxx → xxx」等于没改）
-    if req.caption is not None and req.caption != (img.caption or ""):
-        if len(req.caption) > 20:
-            raise HTTPException(status_code=400, detail="备注不能超过20字")
-        old_caption = img.caption or "未设置"
-        img.caption = req.caption
-        # [新增 2026-09-15] 图片备注变更补留痕 + 站内信提醒（原来改了无人可知）
-        specialty = db.query(DepartmentSpecialty).filter(
-            DepartmentSpecialty.id == specialty_id,
-        ).first()
-        specialty_name = specialty.name if specialty else f"ID:{specialty_id}"
-        _record_dept_change(
-            db, request, current_user, dept,
-            change_summary=(
-                f"特色技术「{specialty_name}」图片备注: "
-                f"{old_caption} → {req.caption or '未设置'}"
-            ),
-            event_code="department.specialty_changed",
-            fallback_title="科室特色技术/设备变更",
-        )
+    # [重构 2026-09-21 / 代码质量审计 Q-7] 备注更新 + 留痕逻辑统一走公共函数
+    # （原先在特色技术图片与设备图片两个接口里逐行重复约 25 行）。
+    _apply_image_caption_change(
+        db, request, current_user, dept, img, req.caption,
+        name_model=DepartmentSpecialty, name_id=specialty_id, label="特色技术",
+    )
 
     db.commit()
     db.refresh(img)
@@ -521,8 +559,7 @@ async def upload_equipment_image(
         raise e
     except Exception as e:
         # [修复/问题6] 内部异常详情不再返回客户端，仅写日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
 
     # 创建图片记录
@@ -568,27 +605,11 @@ def update_equipment_image_caption(
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
 
-    # [修复 2026-09-15] 仅在备注确实变化时才写入，避免前端回传原值时产生无意义的
-    # 留痕与提醒（摘要为「xxx → xxx」等于没改）
-    if req.caption is not None and req.caption != (img.caption or ""):
-        if len(req.caption) > 20:
-            raise HTTPException(status_code=400, detail="备注不能超过20字")
-        old_caption = img.caption or "未设置"
-        img.caption = req.caption
-        # [新增 2026-09-15] 设备图片备注变更补留痕 + 站内信提醒
-        equipment = db.query(DepartmentEquipment).filter(
-            DepartmentEquipment.id == equipment_id,
-        ).first()
-        equipment_name = equipment.name if equipment else f"ID:{equipment_id}"
-        _record_dept_change(
-            db, request, current_user, dept,
-            change_summary=(
-                f"设备「{equipment_name}」图片备注: "
-                f"{old_caption} → {req.caption or '未设置'}"
-            ),
-            event_code="department.specialty_changed",
-            fallback_title="科室特色技术/设备变更",
-        )
+    # [重构 2026-09-21 / 代码质量审计 Q-7] 同特色技术图片，统一走公共函数
+    _apply_image_caption_change(
+        db, request, current_user, dept, img, req.caption,
+        name_model=DepartmentEquipment, name_id=equipment_id, label="设备",
+    )
 
     db.commit()
     db.refresh(img)
@@ -667,8 +688,7 @@ async def upload_group_photo(
         raise e
     except Exception as e:
         # [修复/问题6] 内部异常详情不再返回客户端，仅写日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
 
     # 删除旧照片

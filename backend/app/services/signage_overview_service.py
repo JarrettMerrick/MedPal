@@ -11,7 +11,9 @@ from app.services.signage_alert_service import (
     get_abnormal_status, get_inspections_due_soon, get_inspections_overdue,
     get_expiring_validity, get_repairs_in_progress,
 )
-from app.utils import to_iso_utc, to_beijing_date, utc_now
+# [修复 2026-09-17] 补 beijing_now 导入：build_overview 用它计算「本月」起点，
+# 原文件未导入该函数，导致 GET /api/signages/overview 一直抛 NameError（HTTP 500）
+from app.utils import to_iso_utc, to_beijing_date, utc_now, beijing_now
 
 # 标识状态中文标签（与前端 constants/signageStatus.ts 口径一致）
 STATUS_LABELS = {

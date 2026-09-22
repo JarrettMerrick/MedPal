@@ -19,6 +19,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/floor-plans", tags=["平面图管理"])
 
 
@@ -46,7 +48,11 @@ def _notify_floorplan_change(db: Session, current_user: User, obj_label: str, su
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
 
 @router.get("")
@@ -80,7 +86,12 @@ def create_floor_plan_endpoint(
                      detail=f"campus={p.campus}, building={p.building}, floor={p.floor}", target=str(p.id),
                      ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_floorplan_change(
         db, current_user, f"平面图 #{p.id}",
@@ -129,7 +140,12 @@ def delete_floor_plan_endpoint(
                      detail=f"plan_id={plan_id}", target=str(plan_id),
                      ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_floorplan_change(db, current_user, f"平面图 #{plan_id}", f"删除了平面图「{_p_loc}」")
     return {"message": "删除成功"}
@@ -162,7 +178,12 @@ def create_point_endpoint(
                      detail=f"plan_id={plan_id}, signage_id={data.signage_id}", target=str(point.id),
                      ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_floorplan_change(
         db, current_user, f"标识点位 #{point.id}",
@@ -236,7 +257,12 @@ def delete_point_endpoint(
                      detail=f"point_id={point_id}", target=str(point_id),
                      ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_floorplan_change(db, current_user, f"标识点位 #{point_id}", "删除了平面图上的标识点位")
     return {"message": "删除成功"}
@@ -286,7 +312,12 @@ async def upload_floor_plan_image(
                          detail=f"plan_id={plan_id}, file={file.filename}", target=str(plan_id),
                          ip_address=get_client_ip(request))
             db.commit()
-        except Exception: pass
+        except Exception:
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
         # [新增 2026-09-15] 补发站内信（事件：signage.changed）
         _notify_floorplan_change(
             db, current_user, f"平面图 #{plan_id}",
@@ -331,7 +362,12 @@ async def update_floor_plan_image(
                      detail=f"plan_id={plan_id}, image_changed={bool(old_image_url and p.image_url != old_image_url)}",
                      target=str(plan_id), ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_floorplan_change(
         db, current_user, f"平面图 #{plan_id}",

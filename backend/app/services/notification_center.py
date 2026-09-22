@@ -402,8 +402,10 @@ def _actor_fallback_recipients(
     )
     if not exists:
         return []
-    logger.info("通知事件 %s 无其他收件人，回落给操作者本人 %s 作为操作回执",
-                event.get("code"), actor_id)
+    # [修正 2026-09-19] INFO → DEBUG：正常的业务回落分支（每次事件发送都可能触发），
+    # 不属系统关键信息，降级避免稀释 INFO 通道。
+    logger.debug("通知事件 %s 无其他收件人，回落给操作者本人 %s 作为操作回执",
+                 event.get("code"), actor_id)
     return [actor_id]
 
 
@@ -476,7 +478,8 @@ def emit(
 
     cfg = effective_config(db, code)
     if not cfg["enabled"]:
-        logger.info("通知事件 %s 已关闭，未发送", code)
+        # [修正 2026-09-19] INFO → DEBUG：事件被管理员关闭属正常业务分支
+        logger.debug("通知事件 %s 已关闭，未发送", code)
         return 0
 
     variables = dict(context or {})
@@ -517,7 +520,8 @@ def emit(
         uids = _actor_fallback_recipients(db, event, actor_id)
 
     if not uids:
-        logger.info("通知事件 %s 解析后无有效收件人，未发送", code)
+        # [修正 2026-09-19] INFO → DEBUG：无有效收件人属正常业务分支
+        logger.debug("通知事件 %s 解析后无有效收件人，未发送", code)
         return 0
 
     message_service.create_message(

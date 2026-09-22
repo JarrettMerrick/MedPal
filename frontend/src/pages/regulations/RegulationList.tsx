@@ -95,13 +95,29 @@ const RegulationList: React.FC = () => {
     );
   }
 
+  // [调整 2026-09-19] 列宽按库中**实际数据长度**收敛，消除整表横向滚动：
+  //   实测 制度名称 ≤9 字、版本 14 字符、创建人 3 字、类别为短词标签，
+  //   据此给各辅助列设置固定宽度，只留「制度名称」不设宽度以吸收剩余空间 ——
+  //   这样表格总宽恒等于容器宽度，不会溢出产生横向滚动条。
+  //   「制度名称」同时去掉 ellipsis 并允许换行：名称超长时换行展示，
+  //   而不是被截成省略号导致信息不可读（这是原实现的主要问题）。
   const columns = [
-    { title: '序号', width: 60, render: (_: any, __: any, idx: number) => (page - 1) * PAGE_SIZE + idx + 1 },
-    { title: '制度名称', dataIndex: 'name', key: 'name', ellipsis: true },
-    { title: '所属类别', dataIndex: 'category_name', key: 'category_name', render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
-    { title: '版本', dataIndex: 'version', key: 'version', render: (v: string) => v || '-' },
-    { title: '创建人', dataIndex: 'created_by', key: 'created_by', render: (v: string) => v || '-' },
-    { title: '最后修改', dataIndex: 'updated_at', key: 'updated_at', render: (v: string) => v ? formatDateTime(v) : '-' },
+    { title: '序号', width: 72, render: (_: any, __: any, idx: number) => (page - 1) * PAGE_SIZE + idx + 1 },
+    {
+      title: '制度名称',
+      dataIndex: 'name',
+      key: 'name',
+      // 不设 width：作为主内容列吸收剩余空间；允许换行 + 兜底最小宽度
+      // （style 需断言为 CSSProperties，否则 'break-word' 会被推断为 string，
+      //   与 CSS 字面量类型不兼容 —— TS2322）
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 200 } as React.CSSProperties,
+      }),
+    },
+    { title: '所属类别', dataIndex: 'category_name', key: 'category_name', width: 140, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
+    { title: '版本', dataIndex: 'version', key: 'version', width: 150, render: (v: string) => v || '-' },
+    { title: '创建人', dataIndex: 'created_by', key: 'created_by', width: 100, render: (v: string) => v || '-' },
+    { title: '最后修改', dataIndex: 'updated_at', key: 'updated_at', width: 170, render: (v: string) => v ? formatDateTime(v) : '-' },
     {
       title: '操作', key: 'actions', width: 180,
       render: (_: any, record: Regulation) => (

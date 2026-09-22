@@ -2,7 +2,8 @@
 // 顶栏返回+标题+状态标签+编辑按钮，Hero区域大图+信息卡片，双栏位置+安装信息，附件资料，灯箱预览
 // [修复 2026-09-04] 新增历史版本快照查看功能
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, message, Spin, Empty, Tag, Modal, Timeline, Descriptions, Typography, Divider, List, Card, Tooltip } from 'antd';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
+import { App, Button, Spin, Empty, Tag, Modal, Timeline, Descriptions, Typography, Divider, List, Card, Tooltip } from 'antd';
 import { EditOutlined, ArrowLeftOutlined, DownloadOutlined, EyeOutlined, FileOutlined, HistoryOutlined, ClockCircleOutlined, FileSearchOutlined, ToolOutlined, SyncOutlined, CopyOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getSignage, getSignagePhotos, getSignageHistory, getSignageInspections, getSignageRepairs } from '../../api/signage';
@@ -18,27 +19,23 @@ import { formatDateTimeStandard } from '../../utils/time';
 // [新增 2026-09-14] 剪贴板复制（兼容院内网 http 访问环境）
 import { copyText } from '../../utils/clipboard';
 import { QRCodeCanvas } from 'qrcode.react';
+// [重构 2026-09-21 / Q-8] 标识状态统一引用权威源，不再维护本地副本
+import { SIGNAGE_STATUS_MAP, getSignageStatusLabel } from '../../constants/signageStatus';
 
-// [修复 2026-09-04] CSS变量，对应参考设计稿中的颜色系统
-const CSS_VARS: React.CSSProperties = {
-  '--bg': '#F2F4F7',
-  '--card': '#FFFFFF',
-  '--ink': '#1F2933',
-  '--ink2': '#5B6B7B',
-  '--ink3': '#97A3B2',
-  '--line': '#E4E9EF',
-  '--blue': '#1565B8',
-  '--blue-d': '#0E4B8C',
-  '--blue-soft': '#EAF2FB',
-  '--ok': '#2F9E64',
-  '--ok-soft': '#E5F4EC',
-  '--radius': '14px',
-} as React.CSSProperties;
+/* [改造 2026-09-19] 原此处定义了一整套页面私有颜色变量（--bg / --ink / --blue …）。
+   问题有二：① 与全局语义变量重名冲突（如 --ok 遮蔽全站功能色）；
+   ② 变量只挂在页面内层 div 上，而 Modal 渲染到 document.body，导致
+   **弹窗内的 var() 全部解析失败**（描边退化为 currentColor 等）。
+   现已全面改用 theme/neu-tokens.css 的全局语义变量（--text-* / --line-* /
+   --accent* / --ok / --neu-*），本变量对象随之移除，其挂载点也已去掉。 */
 
 // [修复 2026-09-04] 全局样式，对应参考设计稿中的CSS
 const globalStyles = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  /* [改造 2026-09-19] 原先此处注入的 * { margin/padding reset } 与
+     body { background: var(--bg) } 属**文档级覆盖**，会影响所有页面，
+     且 body 层解析不到页面局部变量（导致底色失效）。
+     颜色与字体已由 theme/neu-tokens.css 与 styles/index.css 统一提供，
+     故此二处已移除；仅保留本页自身的类规则（见下方）。 */
   a { color: inherit; text-decoration: none; }
   
   /* ===== 容器 ===== */
@@ -46,12 +43,12 @@ const globalStyles = `
   
   /* ===== 顶栏 ===== */
   .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 22px; }
-  .back { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--ink2); padding: 8px 13px; border: 1px solid var(--line); background: #fff; border-radius: 10px; transition: all 0.15s; cursor: pointer; }
-  .back:hover { color: var(--blue); border-color: var(--blue); }
+  .back { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--text-2); padding: 8px 13px; border: 1px solid var(--line-soft); background: var(--neu-bg); border-radius: 10px; transition: all 0.15s; cursor: pointer; }
+  .back:hover { color: var(--accent); border-color: var(--accent); }
   .title-block { flex: 1 1 220px; min-width: 0; }
   .title-block h1 { font-size: 22px; font-weight: 700; letter-spacing: 0.3px; }
-  .title-sub { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 7px; font-size: 13px; color: var(--ink2); }
-  .tag { display: inline-flex; align-items: center; padding: 2px 10px; background: #fff; border: 1px solid var(--line); border-radius: 20px; font-size: 12.5px; font-weight: 500; color: var(--ink); }
+  .title-sub { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 7px; font-size: 13px; color: var(--text-2); }
+  .tag { display: inline-flex; align-items: center; padding: 2px 10px; background: var(--neu-bg); border: 1px solid var(--line-soft); border-radius: 20px; font-size: 12.5px; font-weight: 500; color: var(--text-1); }
   .status-ok { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; background: var(--ok-soft); color: #1F7A4B; border-radius: 20px; font-size: 12.5px; font-weight: 600; }
   .status-ok i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; }
   .status-damaged { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; background: #FEF9C3; color: #A16207; border-radius: 20px; font-size: 12.5px; font-weight: 600; }
@@ -64,65 +61,65 @@ const globalStyles = `
   .status-removed { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; background: #F3F4F6; color: #6B7280; border-radius: 20px; font-size: 12.5px; font-weight: 600; }
   .status-removed i { width: 7px; height: 7px; border-radius: 50%; background: #6B7280; display: inline-block; }
   .top-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-  .btn-edit { display: inline-flex; align-items: center; gap: 7px; padding: 9px 18px; background: var(--blue); color: #fff; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
-  .btn-edit:hover { background: var(--blue-d); }
+  .btn-edit { display: inline-flex; align-items: center; gap: 7px; padding: 9px 18px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+  .btn-edit:hover { background: var(--accent-strong); }
   
   /* ===== Hero：现场安装图 ===== */
   .hero { display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(320px, 1fr); gap: 20px; margin-bottom: 20px; }
   .photo-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  .photo-frame { position: relative; border-radius: var(--radius); overflow: hidden; background: #0E2436; box-shadow: 0 1px 2px rgba(14, 36, 54, 0.08), 0 10px 30px rgba(14, 36, 54, 0.12); }
+  .photo-frame { position: relative; border-radius: var(--radius-control); overflow: hidden; background: #0E2436; box-shadow: 0 1px 2px rgba(14, 36, 54, 0.08), 0 10px 30px rgba(14, 36, 54, 0.12); }
   .photo-frame img { display: block; width: 100%; max-height: 500px; object-fit: cover; cursor: zoom-in; }
-  .photo-badge { position: absolute; left: 14px; top: 14px; display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; background: rgba(255, 255, 255, 0.95); color: var(--blue-d); border-radius: 8px; font-size: 12.5px; font-weight: 700; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14); }
+  .photo-badge { position: absolute; left: 14px; top: 14px; display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; background: rgba(255, 255, 255, 0.95); color: var(--accent-strong); border-radius: 8px; font-size: 12.5px; font-weight: 700; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14); }
   .photo-badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(47, 158, 100, 0.28); }
   .zoom-btn { position: absolute; right: 14px; bottom: 14px; display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; background: rgba(15, 20, 25, 0.58); color: #fff; border: none; border-radius: 9px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: background 0.15s; }
   .zoom-btn:hover { background: rgba(15, 20, 25, 0.8); }
-  .photo-caption { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
-  .photo-caption .pin { flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--blue-soft); display: flex; align-items: center; justify-content: center; color: var(--blue); }
+  .photo-caption { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; background: var(--neu-bg); border: 1px solid var(--line-soft); border-radius: var(--radius-control); }
+  .photo-caption .pin { flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); display: flex; align-items: center; justify-content: center; color: var(--accent); }
   /* [修复 2026-09-07] 重构为标题 + 两行列标签，保证地理位置、标识信息、安装时间、有效期、巡检时间对齐美观 */
   .caption-body { flex: 1; min-width: 0; }
-  .caption-title { font-size: 14.5px; font-weight: 600; color: var(--ink); margin-bottom: 10px; }
+  .caption-title { font-size: 14.5px; font-weight: 600; color: var(--text-1); margin-bottom: 10px; }
   .caption-rows { display: flex; flex-direction: column; gap: 8px; }
   .caption-row { display: flex; flex-wrap: wrap; gap: 10px 24px; }
   .caption-item { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-  .caption-label { color: var(--ink2); font-size: 12px; white-space: nowrap; }
-  .caption-value { color: var(--ink); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+  .caption-label { color: var(--text-2); font-size: 12px; white-space: nowrap; }
+  .caption-value { color: var(--text-1); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
   /* [修复 2026-09-04] 大图下方分栏：位置说明 + 标识二维码 */
   .panel-split { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: stretch; }
-  .qr-card { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 14px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); min-width: 152px; }
-  .qr-card .qr-title { font-size: 12.5px; font-weight: 700; color: var(--ink2); align-self: flex-start; display: flex; align-items: center; gap: 5px; }
+  .qr-card { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 14px; background: var(--neu-bg); border: 1px solid var(--line-soft); border-radius: var(--radius-control); min-width: 152px; }
+  .qr-card .qr-title { font-size: 12.5px; font-weight: 700; color: var(--text-2); align-self: flex-start; display: flex; align-items: center; gap: 5px; }
   .qr-card .qr-canvas { border-radius: 6px; }
-  .qr-download { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 100%; padding: 7px 10px; margin-top: 2px; background: var(--blue); color: #fff; border: none; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
-  .qr-download:hover { background: var(--blue-d); }
-  .qr-card .qr-code-text { font-size: 11px; color: var(--ink3); text-align: center; word-break: break-all; line-height: 1.4; }
+  .qr-download { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 100%; padding: 7px 10px; margin-top: 2px; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+  .qr-download:hover { background: var(--accent-strong); }
+  .qr-card .qr-code-text { font-size: 11px; color: var(--text-3); text-align: center; word-break: break-all; line-height: 1.4; }
   
   /* ===== 信息面板 ===== */
   .info-panel { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-  .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .card { background: var(--neu-bg); border: 1px solid var(--line-soft); border-radius: var(--radius-control); padding: 16px 18px; }
   .card-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; margin-bottom: 13px; }
-  .card-head::before { content: ""; width: 4px; height: 14px; border-radius: 2px; background: var(--blue); }
+  .card-head::before { content: ""; width: 4px; height: 14px; border-radius: 2px; background: var(--accent); }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 10px 14px; font-size: 13.5px; }
   .kv > div { display: contents; }
-  .kv dt { color: var(--ink2); white-space: nowrap; }
-  .kv dd { color: var(--ink); font-weight: 500; text-align: right; word-break: break-all; }
-  .kv dd.muted { color: var(--ink3); font-weight: 400; }
+  .kv dt { color: var(--text-2); white-space: nowrap; }
+  .kv dd { color: var(--text-1); font-weight: 500; text-align: right; word-break: break-all; }
+  .kv dd.muted { color: var(--text-3); font-weight: 400; }
   
   /* ===== 双栏信息 ===== */
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-  .kv .addr { font-weight: 400; color: var(--ink); }
+  .kv .addr { font-weight: 400; color: var(--text-1); }
   
   /* ===== 附件 ===== */
   .attach-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .attach-item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #FAFBFC; min-width: 0; }
-  .file-badge { flex: none; width: 44px; height: 44px; border-radius: 10px; background: var(--blue-soft); color: var(--blue); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; }
-  .thumb { flex: none; width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: #E7ECF2; cursor: zoom-in; }
+  .attach-item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--neu-bg); min-width: 0; }
+  .file-badge { flex: none; width: 44px; height: 44px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; }
+  .thumb { flex: none; width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: var(--line-softer); cursor: zoom-in; }
   .attach-info { flex: 1 1 0; min-width: 0; }
   .attach-info strong { display: block; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .attach-info span { display: block; font-size: 12px; color: var(--ink2); margin-top: 2px; }
-  .attach-action { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--blue); font-weight: 600; cursor: pointer; padding: 6px 10px; border-radius: 8px; transition: background 0.15s; border: none; background: none; }
-  .attach-action:hover { background: var(--blue-soft); }
+  .attach-info span { display: block; font-size: 12px; color: var(--text-2); margin-top: 2px; }
+  .attach-action { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--accent); font-weight: 600; cursor: pointer; padding: 6px 10px; border-radius: 8px; transition: background 0.15s; border: none; background: none; }
+  .attach-action:hover { background: var(--accent-soft); }
   
   /* ===== 页脚 ===== */
-  .foot { margin-top: 24px; text-align: center; font-size: 12px; color: var(--ink3); }
+  .foot { margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-3); }
   
   /* ===== 灯箱 ===== */
   /* [修复 2026-09-08] z-index 提升至 3000：灯箱可能从 antd Modal（z-index 1000）内触发
@@ -133,23 +130,14 @@ const globalStyles = `
   .lightbox-body { position: relative; max-width: min(92vw, 1000px); max-height: 88vh; text-align: center; }
   .lightbox-body img { max-width: 100%; max-height: 80vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); display: block; margin: 0 auto; }
   .lightbox-cap { color: #D7DFE7; font-size: 13px; margin-top: 12px; }
-  .lightbox-close { position: absolute; right: -12px; top: -12px; width: 40px; height: 40px; border-radius: 50%; background: #fff; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); }
-  .lightbox-close svg { width: 18px; height: 18px; stroke: #1F2933; }
+  .lightbox-close { position: absolute; right: -12px; top: -12px; width: 40px; height: 40px; border-radius: 50%; background: var(--neu-bg); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); }
+  .lightbox-close svg { width: 18px; height: 18px; stroke: var(--text-1); }
   
-  /* [修复 2026-09-04] 历史版本弹窗样式 */
-  .ant-modal-content { border-radius: 14px; }
-  .ant-modal-header { border-bottom: 1px solid var(--line); padding: 16px 24px; }
-  .ant-modal-title { font-size: 18px; font-weight: 700; }
-  .ant-list-item { transition: all 0.15s; }
-  .ant-list-item:hover { background: #F8FAFC; border-color: var(--blue) !important; }
-  .ant-descriptions-bordered .ant-descriptions-item-label { 
-    background: #F8FAFC; 
-    font-weight: 500; 
-    color: var(--ink2); 
-    width: 120px;
-  }
-  .ant-descriptions-bordered .ant-descriptions-item-content { color: var(--ink); }
-  .ant-tag { border-radius: 4px; }
+  /* [改造 2026-09-19] 此处原有针对 .ant-modal-content / .ant-modal-header /
+     .ant-modal-title / .ant-list-item(:hover) / .ant-descriptions-bordered /
+     .ant-tag 的覆盖。由于本页样式通过 <style> 注入 document，这些规则实际是
+     **全站生效**的（例如把所有弹窗圆角改成 14px、所有 Tag 改成 4px），
+     会与组件覆盖层 neumorphism.css 的规范冲突。现统一交回组件层处理，此处移除。 */
   
   /* ===== 响应式 ===== */
   @media (max-width: 900px) {
@@ -167,15 +155,12 @@ const globalStyles = `
   }
 `;
 
-// [修复 2026-09-04] 状态映射，对应参考设计稿中的标签颜色
-const STATUS_MAP: Record<string, { label: string; className: string; color: string }> = {
-  normal: { label: '正常', className: 'status-ok', color: '#1F7A4B' },
-  damaged: { label: '轻微破损', className: 'status-damaged', color: '#A16207' },
-  severely_damaged: { label: '严重损坏', className: 'status-severe', color: '#DC2626' },
-  // [修复 2026-09-09] 补充维修处理中：此前缺失导致详情页顶栏显示英文原值
-  repair_in_progress: { label: '维修处理中', className: 'status-repair', color: '#1677FF' },
-  removed: { label: '已拆除', className: 'status-removed', color: '#6B7280' },
-};
+// [重构 2026-09-21 / 代码质量审计 Q-8] 原先此处另有一份 STATUS_MAP 副本，
+// 与 constants/signageStatus.ts 及 SignageForm 的副本三者并存、口径已开始漂移
+// （本副本此前也曾漏过 repair_in_progress，导致顶栏显示英文原值）。
+// 现统一引用权威源 SIGNAGE_STATUS_MAP —— 字段名与原副本一致（label / className / color），
+// 另多出 value 与 tagColor 两个字段可用。
+// 说明：原副本的 color 存的是具体色值，权威源的 color 同样是色值（antd 色名在 tagColor）。
 
 // [新增 2026-09-09] 顶栏白底描边按钮统一样式（维修记录/巡检历史/查看历史版本/版本更新共用）
 const ghostBtnStyle: React.CSSProperties = {
@@ -183,9 +168,9 @@ const ghostBtnStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: '7px',
   padding: '9px 18px',
-  background: '#fff',
-  color: 'var(--ink)',
-  border: '1px solid var(--line)',
+  background: 'var(--neu-bg)',
+  color: 'var(--text-1)',
+  border: '1px solid var(--line-soft)',
   borderRadius: '10px',
   fontSize: '14px',
   fontWeight: 600,
@@ -223,6 +208,8 @@ const Lightbox: React.FC<{
 };
 
 const SignageDetail: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -362,7 +349,9 @@ const SignageDetail: React.FC = () => {
 
   if (!data) return <Empty description="标识不存在" />;
 
-  const statusInfo = STATUS_MAP[data.status] || { label: data.status, className: 'status-removed', color: '#6B7280' };
+  const statusInfo =
+    SIGNAGE_STATUS_MAP[data.status] ||
+    { value: data.status, label: data.status, tagColor: 'default', color: '#6B7280', className: 'status-removed' };
 
   // [修复 2026-09-04] 获取现场照片 URL（优先使用 installation_photo，否则取 photos 列表中第一张）
   const mainPhotoUrl = data.installation_photo
@@ -446,7 +435,11 @@ const SignageDetail: React.FC = () => {
   const attachments: { name: string; url: string; type: string; isImage: boolean }[] = [];
   if (data.design_photo) {
     const url = getOriginalUrl(data.design_photo) || data.design_photo;
-    const fileName = data.design_photo.split('/').pop() || '设计文件';
+    // [调整 2026-09-17] 名称优先取「文件管理」中为该文件设置的使用名（design_file_name）；
+    // 未引用文件库时回退到路径文件名，避免显示带时间戳随机串的原始落盘名
+    const fileName = data.design_file_name
+      || data.design_photo.split('/').pop()
+      || '设计文件';
     attachments.push({ name: fileName, url, type: '设计文件', isImage: false });
   }
   if (data.installation_photo) {
@@ -470,8 +463,9 @@ const SignageDetail: React.FC = () => {
       {/* [修复 2026-09-04] 注入全局样式 */}
       <style dangerouslySetInnerHTML={{ __html: globalStyles }} />
       
-      {/* [修复 2026-09-04] 应用CSS变量 */}
-      <div style={CSS_VARS}>
+      {/* [改造 2026-09-19] 原此处挂载页面私有 CSS 变量（style={CSS_VARS}），
+          现改用全局语义变量，无需挂载点 */}
+      <div>
         <div className="wrap">
           {/* ===== 顶栏 ===== */}
           <header className="topbar">
@@ -581,8 +575,8 @@ const SignageDetail: React.FC = () => {
                     </button>
                   </>
                 ) : (
-                  <div style={{ textAlign: 'center', color: '#666', padding: '60px 0' }}>
-                    <FileOutlined style={{ fontSize: 48, display: 'block', marginBottom: 8, color: '#ccc' }} />
+                  <div style={{ textAlign: 'center', color: 'var(--text-2)', padding: '60px 0' }}>
+                    <FileOutlined style={{ fontSize: 48, display: 'block', marginBottom: 8, color: 'var(--text-placeholder)' }} />
                     <span>暂无照片</span>
                   </div>
                 )}
@@ -764,7 +758,7 @@ const SignageDetail: React.FC = () => {
         width={800}
         styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
       >
-        <div style={{ marginBottom: 16, color: 'var(--ink2)', fontSize: 13 }}>
+        <div style={{ marginBottom: 16, color: 'var(--text-2)', fontSize: 13 }}>
           查看标识的历史变更版本，每个版本包含当时的完整信息快照
         </div>
         <List
@@ -775,7 +769,7 @@ const SignageDetail: React.FC = () => {
             <List.Item
               style={{ 
                 padding: '12px 16px', 
-                border: '1px solid var(--line)', 
+                border: '1px solid var(--line-soft)', 
                 borderRadius: 8, 
                 marginBottom: 8,
                 cursor: 'pointer',
@@ -787,7 +781,7 @@ const SignageDetail: React.FC = () => {
                   key="view" 
                   type="link" 
                   icon={<EyeOutlined />}
-                  style={{ color: 'var(--blue)' }}
+                  style={{ color: 'var(--accent)' }}
                 >
                   查看详情
                 </Button>
@@ -799,11 +793,11 @@ const SignageDetail: React.FC = () => {
                     width: 40,
                     height: 40,
                     borderRadius: '50%',
-                    background: item.snapshot ? 'var(--blue-soft)' : '#F3F4F6',
+                    background: item.snapshot ? 'var(--accent-soft)' : '#F3F4F6',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    color: item.snapshot ? 'var(--blue)' : '#9CA3AF'
+                    color: item.snapshot ? 'var(--accent)' : 'var(--text-3)'
                   }}>
                     <ClockCircleOutlined />
                   </div>
@@ -822,16 +816,16 @@ const SignageDetail: React.FC = () => {
                   </div>
                 }
                 description={
-                  <div style={{ fontSize: 12, color: 'var(--ink2)' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                     {/* [修复 2026-09-08] 后端时间为 UTC，按本地时区转换显示（原样显示差 8 小时） */}
                     <div>变更时间: {formatDateTimeStandard(item.changed_at)}</div>
                     <div>操作人: {item.changed_by || '未知'}</div>
                     {item.old_value && (
                       <div style={{ marginTop: 4 }}>
                         {/* [修复 2026-09-09] 枚举值转中文（如 repair_in_progress → 维修处理中） */}
-                        <span style={{ color: '#DC2626' }}>旧值: {formatSignageFieldValue(item.field_name, item.old_value)}</span>
+                        <span style={{ color: 'var(--danger)' }}>旧值: {formatSignageFieldValue(item.field_name, item.old_value)}</span>
                         {' → '}
-                        <span style={{ color: '#16A34A' }}>新值: {formatSignageFieldValue(item.field_name, item.new_value)}</span>
+                        <span style={{ color: 'var(--ok)' }}>新值: {formatSignageFieldValue(item.field_name, item.new_value)}</span>
                       </div>
                     )}
                   </div>
@@ -857,29 +851,29 @@ const SignageDetail: React.FC = () => {
       >
         {selectedSnapshot && (
           <div>
-            <div style={{ marginBottom: 16, padding: 12, background: '#F8FAFC', borderRadius: 8 }}>
+            <div style={{ marginBottom: 16, padding: 12, background: 'var(--line-softer)', borderRadius: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                 <div>
                   <strong>变更信息</strong>
-                  <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>
                     时间: {formatDateTimeStandard(selectedSnapshot.changed_at)}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 12, color: 'var(--ink2)' }}>操作人</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>操作人</div>
                   <div style={{ fontWeight: 500 }}>{selectedSnapshot.changed_by || '未知'}</div>
                 </div>
               </div>
               {selectedSnapshot.field_name && (
                 <div style={{ fontSize: 13 }}>
-                  <span style={{ color: 'var(--ink2)' }}>变更字段: </span>
+                  <span style={{ color: 'var(--text-2)' }}>变更字段: </span>
                   {/* [修复 2026-09-09] 字段名与枚举值转中文 */}
                   <Tag>{signageFieldLabel(selectedSnapshot.field_name)}</Tag>
                   {selectedSnapshot.old_value && (
                     <>
-                      <span style={{ color: '#DC2626', marginLeft: 8 }}>旧值: {formatSignageFieldValue(selectedSnapshot.field_name, selectedSnapshot.old_value)}</span>
+                      <span style={{ color: 'var(--danger)', marginLeft: 8 }}>旧值: {formatSignageFieldValue(selectedSnapshot.field_name, selectedSnapshot.old_value)}</span>
                       <span style={{ margin: '0 4px' }}>→</span>
-                      <span style={{ color: '#16A34A' }}>新值: {formatSignageFieldValue(selectedSnapshot.field_name, selectedSnapshot.new_value)}</span>
+                      <span style={{ color: 'var(--ok)' }}>新值: {formatSignageFieldValue(selectedSnapshot.field_name, selectedSnapshot.new_value)}</span>
                     </>
                   )}
                 </div>
@@ -962,7 +956,7 @@ const SignageDetail: React.FC = () => {
                         href={getOriginalUrl(JSON.parse(selectedSnapshot.snapshot ?? '{}').design_photo) ?? ''} 
                         target="_blank" 
                         rel="noopener noreferrer"
-                        style={{ color: 'var(--blue)' }}
+                        style={{ color: 'var(--accent)' }}
                       >
                         查看文件
                       </a>
@@ -985,7 +979,7 @@ const SignageDetail: React.FC = () => {
                 </Descriptions>
               </div>
             ) : (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink3)' }}>
+              <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-3)' }}>
                 <div style={{ fontSize: 48, marginBottom: 16 }}>📷</div>
                 <div>此版本无快照数据</div>
               </div>
@@ -1005,7 +999,7 @@ const SignageDetail: React.FC = () => {
       >
         {data?.code ? (
           <>
-            <div style={{ marginBottom: 16, color: 'var(--ink2)', fontSize: 13 }}>
+            <div style={{ marginBottom: 16, color: 'var(--text-2)', fontSize: 13 }}>
               标识编码：{data.code} · 共 {inspectionTotal} 条巡检记录
             </div>
             <List
@@ -1013,12 +1007,14 @@ const SignageDetail: React.FC = () => {
               dataSource={inspectionList}
               locale={{ emptyText: '暂无巡检记录' }}
               renderItem={(item) => {
-                const m = STATUS_MAP[item.result] || { label: item.result, color: '#6B7280' };
+                const m = SIGNAGE_STATUS_MAP[item.result] || {
+      value: item.result, label: item.result, tagColor: 'default', color: '#6B7280', className: 'status-removed',
+    };
                 return (
                   <List.Item
                     style={{
                       padding: '12px 16px',
-                      border: '1px solid var(--line)',
+                      border: '1px solid var(--line-soft)',
                       borderRadius: 8,
                       marginBottom: 8,
                       cursor: 'pointer',
@@ -1030,7 +1026,7 @@ const SignageDetail: React.FC = () => {
                         key="view"
                         type="link"
                         icon={<EyeOutlined />}
-                        style={{ color: 'var(--blue)' }}
+                        style={{ color: 'var(--accent)' }}
                       >
                         查看详情
                       </Button>
@@ -1042,7 +1038,7 @@ const SignageDetail: React.FC = () => {
                           width: 40,
                           height: 40,
                           borderRadius: '50%',
-                          background: 'var(--blue-soft)',
+                          background: 'var(--accent-soft)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center'
@@ -1062,7 +1058,7 @@ const SignageDetail: React.FC = () => {
                         </div>
                       }
                       description={
-                        <div style={{ fontSize: 12, color: 'var(--ink2)' }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                           {/* [修复 2026-09-08] UTC 时间按本地时区转换显示 */}
                           <div>巡检时间：{formatDateTimeStandard(item.created_at)}</div>
                           <div>
@@ -1091,7 +1087,7 @@ const SignageDetail: React.FC = () => {
         width={860}
         styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
       >
-        <div style={{ marginBottom: 16, color: 'var(--ink2)', fontSize: 13 }}>
+        <div style={{ marginBottom: 16, color: 'var(--text-2)', fontSize: 13 }}>
           共 {repairList.length} 条维修记录 · 维修前照片取自巡检时上传的现场照片
         </div>
         {repairList.length === 0 && !repairLoading ? (
@@ -1113,14 +1109,14 @@ const SignageDetail: React.FC = () => {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: '#F8FAFC',
-                border: '1px dashed var(--line)',
+                background: 'var(--line-softer)',
+                border: '1px dashed var(--line-soft)',
                 borderRadius: 8,
-                color: 'var(--ink3)',
+                color: 'var(--text-3)',
                 fontSize: 12,
               };
               return (
-                <div style={{ border: '1px solid var(--line)', borderRadius: 10, padding: 14, marginBottom: 12, background: '#fff' }}>
+                <div style={{ border: '1px solid var(--line-soft)', borderRadius: 10, padding: 14, marginBottom: 12, background: 'var(--neu-bg)' }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
                     <Tag color={done ? 'green' : 'processing'} style={{ margin: 0 }}>
                       {done ? '已完成维修' : '维修处理中'}
@@ -1128,7 +1124,7 @@ const SignageDetail: React.FC = () => {
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{partyLabel}</span>
                     {item.oa_number && <Tag style={{ margin: 0 }}>OA: {item.oa_number}</Tag>}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--ink2)', marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>
                     发起：{item.started_at ? formatDateTimeStandard(item.started_at) : '—'}（{item.started_by || '未知'}）
                     {done && (
                       <>
@@ -1138,12 +1134,12 @@ const SignageDetail: React.FC = () => {
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', marginBottom: 6 }}>维修前照片</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>维修前照片</div>
                       {beforeUrl ? (
                         <img
                           src={beforeUrl}
                           alt="维修前照片"
-                          style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', background: '#E7ECF2' }}
+                          style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', background: 'var(--line-softer)' }}
                           onClick={() => openLightbox(beforeUrl, '维修前照片')}
                         />
                       ) : (
@@ -1151,12 +1147,12 @@ const SignageDetail: React.FC = () => {
                       )}
                     </div>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)', marginBottom: 6 }}>维修后照片</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>维修后照片</div>
                       {afterUrl ? (
                         <img
                           src={afterUrl}
                           alt="维修后照片"
-                          style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', background: '#E7ECF2' }}
+                          style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', background: 'var(--line-softer)' }}
                           onClick={() => openLightbox(afterUrl, '维修后照片')}
                         />
                       ) : (
@@ -1196,8 +1192,12 @@ const SignageDetail: React.FC = () => {
               {inspectionDetail.signage_name || '-'}
             </Descriptions.Item>
             <Descriptions.Item label="巡检结果">
-              <Tag color={(STATUS_MAP[inspectionDetail.result] || {}).color || 'default'}>
-                {(STATUS_MAP[inspectionDetail.result] || {}).label || inspectionDetail.result}
+              {/* [修正 2026-09-21 / Q-8] 改用权威源的 tagColor（antd 色名）——
+                  原实现取的是 color（具体色值），虽也能被 Tag 接受，但语义上用 tagColor 更准确。
+                  label 的回落改由 getSignageStatusLabel 统一处理：取不到时回显原值而非默认「正常」，
+                  避免把未知状态掩盖成正常。 */}
+              <Tag color={SIGNAGE_STATUS_MAP[inspectionDetail.result]?.tagColor ?? 'default'}>
+                {getSignageStatusLabel(inspectionDetail.result)}
               </Tag>
             </Descriptions.Item>
             <Descriptions.Item label="提交人">

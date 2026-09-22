@@ -119,7 +119,7 @@ def _probe_logo(content: bytes) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"Logo 解析失败: {type(e).__name__}: {e}")
+        logger.warning(f"Logo 解析失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="图片文件已损坏或无法解析")
 
     if min(width, height) < LOGO_MIN_EDGE:
@@ -189,4 +189,4 @@ def delete_logo_file(logo_url: str) -> None:
         if os.path.isfile(abs_path):
             os.remove(abs_path)
     except OSError as e:
-        logger.warning(f"删除旧 Logo 文件失败（非致命）: {abs_path}: {e}")
+        logger.warning(f"删除旧 Logo 文件失败（非致命）: {abs_path}: {e}", exc_info=True)

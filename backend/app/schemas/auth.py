@@ -49,6 +49,10 @@ class UserInfo(BaseModel):
     # 用于前端决定「个人信息」卡片跳转到员工详情页还是个人资料页，
     # 并避免对无员工记录的账号（如纯管理员 admin）发起 getStaff 探测请求造成无害 404 噪音。
     has_staff_record: bool = False
+    # [新增 2026-09-17] 注册审核状态（pending / approved / rejected）。
+    # 自助注册账号在审核通过前为 pending：前端据此精简菜单、展示「审核中」提示，
+    # 并把用户引导到「个人信息」页完善资料；approved / rejected 见 app.constants.REVIEW_*。
+    review_status: str = "approved"
 
     class Config:
         from_attributes = True

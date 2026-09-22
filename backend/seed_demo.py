@@ -204,8 +204,11 @@ def random_name(rng: random.Random) -> str:
 
 
 def floor_label(floor: Floor) -> str:
-    """与前端 SignageForm 的楼层展示口径保持一致（如 3F-门诊层）。"""
-    base = f"{floor.floor_number}F"
+    """与前端 utils/floor.ts 的 floorLabel 口径保持一致（如 F3-门诊层）。
+
+    [调整 2026-09-17] 楼层号已改为字母编号（F3 / B1），无需再手工拼接 F 后缀。
+    """
+    base = floor.floor_number or ""
     return f"{base}-{floor.floor_name}" if floor.floor_name else base
 
 
@@ -281,17 +284,19 @@ def seed_campus(db, rng, buildings_count, floors_count, areas_min, areas_max):
     floor_names = rng.sample(FLOOR_NAME_POOL, min(floors_count, len(FLOOR_NAME_POOL)))
     for b in buildings:
         for fno in range(1, floors_count + 1):
+            # [调整 2026-09-17] 楼层号改为字母编号：地上 fno 层记为 F{fno}
+            floor_number = f"F{fno}"
             fl = (
                 db.query(Floor)
-                .filter(Floor.building_id == b.id, Floor.floor_number == fno)
+                .filter(Floor.building_id == b.id, Floor.floor_number == floor_number)
                 .first()
             )
             if not fl:
                 fl = Floor(
                     building_id=b.id,
-                    floor_number=fno,
+                    floor_number=floor_number,
                     floor_name=floor_names[(fno - 1) % len(floor_names)],
-                    description=f"{b.name} {fno}F 测试楼层",
+                    description=f"{b.name} F{fno} 测试楼层",
                     is_active=True,
                     created_by=MARK,
                     updated_by=MARK,
@@ -324,7 +329,7 @@ def seed_campus(db, rng, buildings_count, floors_count, areas_min, areas_max):
                         name=aname,
                         # 区域类型仅作分类标签，允许同楼层出现多个同类型区域
                         area_type=rng.choice(AREA_TYPES),
-                        description=f"{fl.floor_name or str(fl.floor_number) + 'F'}·{aname}",
+                        description=f"{fl.floor_name or fl.floor_number}·{aname}",
                         is_active=True,
                         created_by=MARK,
                         updated_by=MARK,

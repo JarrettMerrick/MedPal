@@ -38,13 +38,18 @@ def run_serial(task_func, *args, **kwargs):
         task_func 的返回值
     """
     task_name = getattr(task_func, "__name__", str(task_func))
-    logger.info("⏳ 排队等待串行锁: %s", task_name)
+    # [修正 2026-09-19] 三条流程日志由 INFO 降为 DEBUG：它们只表达「排队/开始/结束」，
+    # 不含业务参数，对故障定位无帮助；而每次备份、导出、批量重置都会刷三条，
+    # 属规范所指的「无意义 INFO 噪声」。
+    # 失败记录保留 ERROR 且带堆栈 —— 这里是任务的最终失败点，异常随后向上抛出，
+    # 调用方不应重复记录（避免同一次失败产生多条告警）。
+    logger.debug("⏳ 排队等待串行锁: %s", task_name)
     with _heavy_lock:
-        logger.info("▶ 开始执行串行任务: %s", task_name)
+        logger.debug("▶ 开始执行串行任务: %s", task_name)
         try:
             return task_func(*args, **kwargs)
         except Exception:
-            logger.error("✕ 串行任务失败: %s", task_name, exc_info=True)
+            logger.error("串行任务失败: %s", task_name, exc_info=True)
             raise
         finally:
-            logger.info("✓ 串行任务完成: %s", task_name)
+            logger.debug("✓ 串行任务完成: %s", task_name)

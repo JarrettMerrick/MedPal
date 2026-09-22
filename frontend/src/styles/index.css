@@ -11,8 +11,12 @@
 
   body {
     font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
-    background-color: #F6F8FA;
-    color: #1F2D3D;
+    /* [改造 2026-09-19] 底色与文字改引用拟物变量：
+       新拟物模式下与表面同色（#e7eef1），经典模式下自动退回原暖灰 #f6f8fa，
+       深色模式下由 [data-color-mode="dark"] 覆盖 —— 页面无需感知当前模式 */
+    background-color: var(--neu-page-bg, #f6f8fa);
+    color: var(--text-1, #1f2d3d);
+    transition: background-color var(--ease-neu, 0.22s ease), color var(--ease-neu, 0.22s ease);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }

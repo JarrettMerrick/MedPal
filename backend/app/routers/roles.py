@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,8 @@ from app.services.audit_service import record_audit
 # [新增 2026-09-15] 站内信提醒：角色 / 权限变更后通知超管
 from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/roles", tags=["角色管理"])
 
@@ -114,7 +117,12 @@ def create_role_api(
                     detail=f"name={req.name}, display_name={req.display_name}, perms={len(req.permission_ids or [])}",
                     target=req.name, ip_address=client_ip)
        db.commit()
-   except Exception: pass
+   except Exception:
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
 
    # [新增 2026-09-15] 新增角色后补发站内信（事件：角色 / 权限变更）：
    # 新角色的权限组合决定了持有者能做什么，属权限体系敏感变更，
@@ -139,7 +147,12 @@ def create_role_api(
            },
        )
        db.commit()
-   except Exception: pass
+   except Exception:
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
    return role
 
 
@@ -174,7 +187,12 @@ def update_role_api(
                      detail=f"name={role.name}, perms={len(req.permission_ids or [])}",
                      target=role.name, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 角色变更后补发站内信（事件：角色 / 权限变更）：
     # 权限调整影响所有持有该角色的账号（可能是一次批量提权/降权），
@@ -243,7 +261,12 @@ def update_role_api(
                 },
             )
             db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return role
 
 
@@ -276,7 +299,12 @@ def delete_role_api(
         record_audit(db, "role_delete", current_user.employee_id,
                      detail=f"name={_name}", target=_name, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 角色删除后补发站内信（事件：角色 / 权限变更）：
     # 删除角色会一并移除其权限组合，此前只写审计日志，超管不知情。
@@ -300,5 +328,10 @@ def delete_role_api(
             },
         )
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return {"message": "删除成功"}

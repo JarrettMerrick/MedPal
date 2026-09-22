@@ -4,9 +4,12 @@
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import uuid
 import time as _time
+# [新增 2026-09-21 / 代码质量审计 Q-13] lifespan 需要 asynccontextmanager
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 from app.config import settings, PROJECT_ROOT, DATA_ROOT
-from app.routers import auth, staff, users, departments, audit, roles, data_io, uploads, staff_cards, notifications, messages, chunk_upload, system_config, regulations, user_department_scope, signages, floor_plans, signage_alerts, signage_export, signage_batch, campus, signage_categories, suppliers, signage_inspections, signage_repairs, branding, registration, account_settings, staff_change, feature_settings, notification_settings
+from app.routers import auth, staff, users, departments, audit, roles, data_io, uploads, staff_cards, notifications, messages, chunk_upload, system_config, regulations, user_department_scope, signages, floor_plans, signage_alerts, signage_export, signage_batch, campus, signage_categories, suppliers, signage_inspections, signage_repairs, branding, registration, account_settings, staff_change, feature_settings, notification_settings, design_files, file_taxonomy
 # [新增 2026-09-14] 功能开关的接口层依赖（见下方 include_router 的 dependencies 参数）
 from app.dependencies import require_feature_enabled
 from app.utils import get_client_ip
@@ -34,7 +37,12 @@ try:
     )
     log_handlers.append(file_handler)
 except (PermissionError, OSError) as e:
-    print(f"警告：无法创建日志文件 {log_file}，将只使用控制台输出: {e}")
+    # [修复 2026-09-19] 禁用 print：符合「日志必须走日志框架」的规范。
+    # 此刻 basicConfig 尚未执行，但 WARNING 级别会由 root logger 的 lastResort
+    # 处理器输出到 stderr，因此该警告不会丢失；配置生效后同样会进日志文件。
+    logging.getLogger("hospital").warning(
+        "无法创建日志文件 %s，将只使用控制台输出: %s", log_file, e, exc_info=True
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -189,18 +197,62 @@ class RequestLogMiddleware:
             ]
             line = " ".join(p for p in parts if p)
 
-            # [改进 2026-09-09] 5xx 错误附带完整堆栈（exc_info），便于事后定位根因
-            if sc >= 500 and error_exc[0] is not None:
+            # [修正 2026-09-19] 职责分离，消除双写与重复告警。
+            #
+            # 原实现把**每一条**请求都同时写 access 与运行日志（两行内容完全相同），
+            # 且 5xx 时两个 logger 各记一条 ERROR + 堆栈 —— 同一次异常产生两条告警，
+            # 4xx（令牌过期、探测请求）也会持续污染运行日志。
+            #
+            # 现按职责划分：
+            #   access 日志 = 访问审计，记录**全部请求**（保留完整轨迹）；
+            #   运行日志   = 服务端诊断，只记「5xx 异常」与「慢请求」。
+            #
+            # 关于 5xx 的去重：未处理异常（error_exc 非空）已由全局异常处理器
+            # _global_exception_handler 写入运行日志并归集到 SystemLog，此处不再重复；
+            # 而**显式返回**的 5xx（如路由内直接返回 500 响应、HTTPException(5xx)）
+            # 不经过全局处理器，因此这里补记一条，确保运行日志不出现盲区。
+            # 二者互斥，故每次 5xx 在运行日志中恰好一条。
+            if sc >= 500:
                 access_logger.error(line, exc_info=error_exc[0])
-                logger.error(line, exc_info=error_exc[0])
+                if error_exc[0] is None:
+                    logger.error(line)
+            elif duration > 1.0:
+                # 慢请求：即使状态码正常也值得关注（可能预示数据库锁或外部依赖变慢）
+                access_logger.log(level, line)
+                logger.warning(f"{line} | 慢请求")
             else:
                 access_logger.log(level, line)
-                # 同时输出到运行日志，用于实时跟踪
-                logger.log(level, line)
 
 
 # ── 应用实例 ─────────────────────────────────────────────────────────
-app = FastAPI(title=settings.app_name, version="1.2.3")
+# [新增 2026-09-21 / 代码质量审计 Q-13] 迁移到 lifespan。
+#
+# 原实现用 `@app.on_event("startup")` / `"shutdown")` 两个独立钩子，该 API 自
+# FastAPI 0.115 起已弃用，官方推荐 lifespan 异步上下文管理器。风险不只是"未来
+# 会报弃用警告"：on_event 的 shutdown 钩子在部分版本/部署方式（如多 worker、
+# 异常退出路径）下可能不被触发 —— 而本项目 shutdown 的职责是**关闭 APScheduler
+# 调度器**，漏掉会让定时任务在进程退出后留下悬挂状态。
+#
+# 迁移策略（保持行为完全不变，只换挂载方式）：
+#   - startup / shutdown 两个函数的**函数体一行未改**，仅去掉装饰器；
+#   - lifespan 按顺序调用它们，语义与原来逐字对应；
+#   - 二者定义在文件后部，lifespan 通过函数名引用 —— 由于 Python 在**运行时**
+#     解析函数体内的全局名，而 lifespan 真正执行是在应用启动时（届时模块已
+#     完全加载），因此引用安全，无需把两个大函数上移。
+#
+# 注意：startup 抛异常时异常会从 lifespan 传出，导致应用启动失败 ——
+# 这与原 on_event 行为一致（原实现也是 `raise`，故意不让应用带病启动）。
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """应用生命周期：启动初始化 → 运行 → 关闭清理。"""
+    startup()
+    try:
+        yield
+    finally:
+        shutdown()
+
+
+app = FastAPI(title=settings.app_name, version="1.2.5", lifespan=lifespan)
 
 # 中间件注册顺序：后注册的在外层（先执行）。RequestLogMiddleware 放在最外以捕获所有请求。
 app.add_middleware(RequestLogMiddleware)
@@ -212,6 +264,47 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
+
+
+# [新增 2026-09-17] 待审核账号（User.review_status == "pending"）的接口白名单。
+# 背景：自助注册成功即可登录系统查看/修改个人资料，审核通过后才获得角色的完整权限。
+# 待审核期间仅放行以下接口，其余一律 403（由 enforce_password_change 中间件统一拦截）：
+#   - 认证类：读取本人信息 / 提交资料 / 修改密码 / 登出 / 刷新令牌
+#   - 本人资料：读取本人人员档案、我的变更记录与撤回、科室下拉（资料表单需要）
+#   - 本人文件：形象照/工卡上传、分片上传、文件存在性检查（服务端另有本人或权限校验）
+_PENDING_REVIEW_EXACT_PATHS = frozenset({
+    "/api/auth/me",
+    "/api/auth/profile",
+    "/api/auth/change-password",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+    "/api/users/profile/me",
+    "/api/staff-changes/mine",
+    "/api/uploads/check",
+    "/api/departments/all",
+})
+
+# 前缀白名单（命中即放行；服务端在各接口内另有归属/权限校验）
+_PENDING_REVIEW_PATH_PREFIXES = (
+    "/api/uploads/photo/",   # 本人形象照上传/删除
+    "/api/upload/",          # 分片上传：init/status/chunk/complete/cancel
+)
+_PENDING_REVIEW_CHANGE_CANCEL_RE = re.compile(r"^/api/staff-changes/[^/]+/cancel$")
+_PENDING_REVIEW_SELF_STAFF_RE = re.compile(r"^/api/staff/([^/]+)$")
+
+
+def _pending_review_allowed(request: Request, employee_id: str) -> bool:
+    """待审核账号是否可访问该请求（白名单判定，说明见上方常量）。"""
+    path = request.url.path
+    if path in _PENDING_REVIEW_EXACT_PATHS:
+        return True
+    # 人员档案：仅允许 GET 本人的档案（供「个人信息」页回填资料）
+    match = _PENDING_REVIEW_SELF_STAFF_RE.match(path)
+    if match:
+        return request.method == "GET" and match.group(1) == employee_id
+    if _PENDING_REVIEW_CHANGE_CANCEL_RE.match(path):
+        return True
+    return path.startswith(_PENDING_REVIEW_PATH_PREFIXES)
 
 
 def _can_access_upload_path(db, user, rel_path: str) -> bool:
@@ -243,14 +336,23 @@ def _can_access_upload_path(db, user, rel_path: str) -> bool:
     from app.models.staff import Staff
     staff = db.query(Staff).filter(Staff.employee_id == emp_id).first()
     if staff is None:
-        # 非人员照片（制度/标识/平面图等），无法按人员归属判定 → 维持原行为
+        # [新增 2026-09-17] 文件库（uploads/files/）：设计源文件按 file.view 权限管控。
+        # 该目录文件名不含人员工号，若沿用「已认证即可访问」会让任意账号直接下载设计源文件。
+        if (rel_path or "").startswith("files/"):
+            try:
+                from app.dependencies import has_permission, PERM_FILE_VIEW
+                return has_permission(user, PERM_FILE_VIEW)
+            except Exception as _perm_err:
+                logger.warning(f"文件库访问权限校验异常，按拒绝处理: {_perm_err}", exc_info=True)
+                return False
+        # 其余非人员文件（制度/标识/平面图等），无法按人员归属判定 → 维持原行为
         return True
 
     try:
         from app.dependencies import has_department_access
         return has_department_access(user, staff.department, db)
     except Exception as _e:
-        logger.warning(f"上传文件归属校验异常，按放行处理: {type(_e).__name__}: {_e}")
+        logger.warning(f"上传文件归属校验异常，按放行处理: {type(_e).__name__}: {_e}", exc_info=True)
         return True
 
 
@@ -367,6 +469,15 @@ async def enforce_password_change(request, call_next):
                                 status_code=403,
                                 content={"detail": "首次登录必须修改密码后，才能使用其他功能"}
                             )
+                    # [新增 2026-09-17] 待审核账号（自助注册后尚未通过审核）：
+                    # 可正常登录，但仅放行认证与本人资料相关接口，其余一律 403；
+                    # 前端据此精简菜单并把用户引导至「个人信息」页完善资料、等待审核。
+                    elif user is not None and getattr(user, "review_status", "approved") == "pending":
+                        if not _pending_review_allowed(request, employee_id):
+                            return JSONResponse(
+                                status_code=403,
+                                content={"detail": "账号正在审核中，审核通过前仅可查看与修改个人信息"}
+                            )
                 finally:
                     db.close()
 
@@ -430,6 +541,11 @@ app.include_router(suppliers.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 app.include_router(signage_inspections.router, dependencies=_FEATURE_SIGNAGE_DEPS)
 # [新增 2026-09-09] 标识维修记录（查看全部维修记录并按条件导出，权限 signage.repair）
 app.include_router(signage_repairs.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+# [新增 2026-09-17] 文件库（设计文件集中管理：分类 / 标签 / 版本 / 回收站 / 标准设计文件）
+# 属「标识平面」范畴，同样受标识功能开关约束
+app.include_router(design_files.router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(file_taxonomy.category_router, dependencies=_FEATURE_SIGNAGE_DEPS)
+app.include_router(file_taxonomy.tag_router, dependencies=_FEATURE_SIGNAGE_DEPS)
 
 
 # ── 全局未处理异常处理器 ────────────────────────────────────────────
@@ -458,7 +574,11 @@ async def _global_exception_handler(request: Request, exc: Exception):
         ))
         _db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     finally:
         # [修复/问题8] 原实现在 finally 里直接 _db.close()；若 _AuditSessionLocal()
         # 自身抛异常，_db 从未绑定，此处会抛 NameError 使异常处理器崩溃，
@@ -467,7 +587,11 @@ async def _global_exception_handler(request: Request, exc: Exception):
             try:
                 _db.close()
             except Exception:
-                pass
+                # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+                # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+                logger.warning(
+                    "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+                )
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
@@ -504,7 +628,8 @@ app.mount("/public", StaticFiles(directory=public_dir), name="public")
 
 
 
-@app.on_event("startup")
+# [改造 2026-09-21 / Q-13] 原为 @app.on_event("startup")（已弃用），
+# 现由上方 lifespan 调用。函数体保持不变。
 def startup():
     """应用启动时初始化数据库"""
     try:
@@ -588,7 +713,8 @@ def startup():
                 except Exception as mig_err:
                     logger.warning(
                         f"自动迁移跳过: {table_name}.{col.name} 添加失败（可能该列需默认值或表非空），"
-                        f"请人工处理。错误: {mig_err}"
+                        f"请人工处理。错误: {mig_err}",
+                        exc_info=True,
                     )
             # [修复 2026-09-05] 遗留列诊断：模型中已删除、但旧库仍存在的列，
             # 若带 NOT NULL 且无默认值，会使该表 INSERT 直接失败（表现为 500）。
@@ -599,6 +725,11 @@ def startup():
                     continue
                 if db_col.get("nullable") or db_col.get("default") is not None:
                     continue
+                # [复核 2026-09-19] 此处**保留 ERROR**，未按「启动期诊断降为 WARN」处理。
+                # 理由：该分支的触发条件极为精确（列已从模型删除 + 库中仍为 NOT NULL +
+                # 无默认值），一旦命中就意味着该表**当前已无法写入**（表现为接口 500），
+                # 属「需立即人工介入」的严重问题；且每次启动最多输出一条，不构成告警噪音。
+                # 降级反而会让值班人员忽略它，导致故障持续。
                 logger.error(
                     f"自动迁移告警: {table_name}.{db_col['name']} 是模型已删除的遗留列，"
                     f"但库中仍为 NOT NULL 且无默认值，将导致该表 INSERT 失败（500）。"
@@ -616,6 +747,55 @@ def startup():
             # 已存在超级管理员则跳过，不改动任何既有账号。
             init_default_admin(db)
             db.commit()  # 提交角色/权限等初始数据到数据库
+            # [新增 2026-09-17] 楼层号格式迁移：楼层号由纯数字改为字母编号
+            # （F1 = 三层、B1 = 地下一层），启动时把存量数据就地转换，
+            # 并同步标识 / 平面图的楼层展示文本。幂等：无旧格式数据时不产生任何写入。
+            try:
+                from app.services.floor_number_migrator import migrate_floor_number_format
+                migrate_result = migrate_floor_number_format(db)
+                if any(migrate_result.get(key) for key in (
+                    "floors", "signage_floor", "plan_floor", "plan_floor_code",
+                )):
+                    logger.info(f"楼层号格式迁移：{migrate_result}")
+            except Exception as migrate_err:
+                db.rollback()
+                logger.warning(f"楼层号格式迁移失败（不影响启动）: {migrate_err}", exc_info=True)
+            # [新增 2026-09-17] 存量设计文件纳入文件库：把现有 signages.design_photo 与
+            # uploads/signage 下的历史设计文件登记为文件库记录并回填引用。
+            # 幂等：已登记的文件不会重复创建；无存量数据时不产生任何写入。
+            try:
+                from app.services.design_file_migrator import (
+                    migrate_design_files, cleanup_orphan_category_refs,
+                    migrate_category_foreign_key,
+                )
+                # [新增 2026-09-17] 先修正 design_files 的外键指向（file_categories →
+                # signage_categories）：SQLite 表结构在建表时固化，旧库外键仍指向已废弃的
+                # 空表，会导致设置分类时报 IntegrityError。必须早于下面两步（它们都会写 category_id）。
+                if migrate_category_foreign_key(db):
+                    logger.info("design_files 外键迁移：file_categories → signage_categories")
+                file_migrate_result = migrate_design_files(db)
+                if any(file_migrate_result.get(key) for key in (
+                    "linked_signages", "files_created", "orphans_added",
+                )):
+                    logger.info(f"存量设计文件迁移：{file_migrate_result}")
+                # [新增 2026-09-17] 文件分类统一为「标识分类」后，清理指向旧自建分类的
+                # 悬空引用（幂等：无悬空引用时不产生写入）
+                cleared = cleanup_orphan_category_refs(db)
+                if cleared:
+                    logger.info(f"清理悬空文件分类引用：{cleared} 条")
+            except Exception as file_migrate_err:
+                db.rollback()
+                logger.warning(f"存量设计文件迁移失败（不影响启动）: {file_migrate_err}", exc_info=True)
+            # [新增 2026-09-17] 补齐缺失的缩略图：维修 / 巡检照片上传接口早期未生成
+            # thumb_ 缩略图，而前端统一按 thumb_ 路径请求（先 404 再回退原图）。
+            # 幂等：已有缩略图的主图只做一次存在性判断，不重复生成、无写入。
+            try:
+                from app.services.upload_service import ensure_missing_thumbnails
+                thumb_result = ensure_missing_thumbnails()
+                if thumb_result.get("generated") or thumb_result.get("failed"):
+                    logger.info(f"补齐缺失缩略图：{thumb_result}")
+            except Exception as thumb_err:
+                logger.warning(f"补齐缩略图失败（不影响启动）: {thumb_err}", exc_info=True)
             # [调整 2026-09-15] 按需求**取消**「旧通知并入站内信」的一次性迁移：
             # 历史 notifications 表数据保持原样（不再写入 messages），启动时也不再执行迁移。
             # （迁移函数仍保留在 services/message_service.migrate_notifications_to_messages，
@@ -632,7 +812,7 @@ def startup():
                     )
             except Exception as sweep_err:
                 db.rollback()
-                logger.warning(f"变更审核超时扫描失败（不影响启动）: {sweep_err}")
+                logger.warning(f"变更审核超时扫描失败（不影响启动）: {sweep_err}", exc_info=True)
         finally:
             db.close()
 
@@ -643,10 +823,13 @@ def startup():
         # 正常情况下 BackgroundTasks 会在响应发送后删除临时文件，
         # 但服务器崩溃/重启时可能导致残留，此处统一清理
         try:
-            from app.routers.data_io import cleanup_stale_temp_files
+            # [重构 2026-09-21 / Q-2] 原为 `from app.routers.data_io import ...` ——
+            # 启动流程（应用层）去导入路由层的函数，属反向依赖。该逻辑已抽到
+            # services/temp_export_service.py，依赖方向恢复为 app → service。
+            from app.services.temp_export_service import cleanup_stale_temp_files
             cleanup_stale_temp_files()
         except Exception as cleanup_err:
-            logger.warning(f"启动时清理残留临时文件失败（非致命）: {cleanup_err}")
+            logger.warning(f"启动时清理残留临时文件失败（非致命）: {cleanup_err}", exc_info=True)
 
         logger.info("应用启动完成")
     except Exception as e:
@@ -654,7 +837,8 @@ def startup():
         raise
 
 
-@app.on_event("shutdown")
+# [改造 2026-09-21 / Q-13] 原为 @app.on_event("shutdown")（已弃用），
+# 现由 lifespan 的 finally 分支调用（保证异常退出时也能执行）。
 def shutdown():
     from app.services.backup_service import stop_scheduler
     stop_scheduler()

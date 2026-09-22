@@ -42,16 +42,21 @@ const isAdvancedHtml = (html: string): boolean =>
   /class\s*=\s*["']/i.test(html) ||
   /<(div|section|article|header|footer|nav|aside|figure)[\s>]/i.test(html);
 
+/**
+ * [改造 2026-09-19] 编辑器样式改引用拟物变量：
+ * 容器去描边改凹陷、工具栏与正文同底色，
+ * 使编辑器在浅色/深色与拟物/经典四种组合下都协调。
+ */
 const EDITOR_CSS = `
 .rte-root { width: 100%; box-sizing: border-box; }
 .rte-container {
-  width: 100%; box-sizing: border-box; border: 1px solid #d9d9d9;
-  border-radius: 8px; overflow: hidden; background: #fff;
+  width: 100%; box-sizing: border-box; border: 1px solid var(--line-soft);
+  border-radius: var(--radius-control); overflow: hidden; background: var(--neu-bg);
 }
 .rte-header {
   display: flex; align-items: center; justify-content: flex-end;
   gap: 8px; flex-wrap: wrap; padding: 8px 10px;
-  background: #fafafa; border-bottom: 1px solid #e8e8e8;
+  background: var(--neu-bg); border-bottom: 1px solid var(--line-softer);
 }
 .rte-body { width: 100%; box-sizing: border-box; }
 .rte-body .w-e-bar { flex-wrap: wrap; }
@@ -67,7 +72,7 @@ const EDITOR_CSS = `
   display: block; width: 100%; box-sizing: border-box; min-height: 360px;
   padding: 12px 14px; border: 0; outline: none; resize: vertical;
   font-family: Consolas, Monaco, 'Courier New', monospace; font-size: 13px; line-height: 1.7;
-  white-space: pre-wrap; word-break: break-word; overflow-x: hidden; color: #1F2933;
+  white-space: pre-wrap; word-break: break-word; overflow-x: hidden; color: var(--text-1);
 }
 .rte-preview {
   width: 100%; box-sizing: border-box; padding: 12px 14px;
@@ -282,7 +287,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
         )}
 
         <div className="rte-body" style={{ display: showEditor ? 'block' : 'none' }}>
-          <Toolbar editor={editor} defaultConfig={toolbarConfig} mode="default" style={{ borderBottom: '1px solid #e8e8e8' }} />
+          <Toolbar editor={editor} defaultConfig={toolbarConfig} mode="default" style={{ borderBottom: '1px solid var(--line-softer)' }} />
           <Editor
             defaultConfig={editorConfig}
             onCreated={handleCreated}
@@ -308,7 +313,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
             {previewHtml ? (
               <RichTextContent html={previewHtml} />
             ) : (
-              <span style={{ color: '#97A3B2' }}>暂无内容</span>
+              <span style={{ color: 'var(--text-3)' }}>暂无内容</span>
             )}
           </div>
         )}

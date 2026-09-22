@@ -67,7 +67,8 @@ export interface BuildingUpdate {
 export interface Floor {
   id: number;
   building_id: number;
-  floor_number: number;
+  /** [调整 2026-09-17] 楼层号改为字母编号：F1/F2…（地上）、B1/B2…（地下，B1 = 地下一层） */
+  floor_number: string;
   floor_name?: string;
   description?: string;
   is_active: boolean;
@@ -83,7 +84,8 @@ export interface Floor {
 
 export interface FloorCreate {
   building_id: number;
-  floor_number: number;
+  /** [调整 2026-09-17] 楼层号改为字母编号：F1/F2…（地上）、B1/B2…（地下，B1 = 地下一层） */
+  floor_number: string;
   floor_name?: string;
   description?: string;
   is_active?: boolean;
@@ -148,7 +150,8 @@ export interface BuildingTreeNode {
 
 export interface FloorTreeNode {
   id: number;
-  floor_number: number;
+  /** [调整 2026-09-17] 楼层号改为字母编号：F1/F2…（地上）、B1/B2…（地下，B1 = 地下一层） */
+  floor_number: string;
   floor_name?: string;
   children: AreaTreeNode[];
 }

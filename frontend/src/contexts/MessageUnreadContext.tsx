@@ -51,11 +51,13 @@ const MessageUnreadContext = createContext<MessageUnreadState>({
 export const useMessageUnread = () => useContext(MessageUnreadContext);
 
 export const MessageUnreadProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, isPendingReview } = useAuth();
   const [unread, setUnread] = useState(0);
 
-  // 权限判定：与菜单显隐、铃铛展示使用同一权限点，保证「能看到才去拉」
-  const canViewMessages = hasPermission(user, PERM_MESSAGE_VIEW);
+  // 权限判定：与菜单显隐、铃铛展示使用同一权限点，保证「能看到才去拉」。
+  // [新增 2026-09-17] 待审核账号（自助注册）后端仅放行本人资料接口，
+  // 站内信必然 403，这里直接跳过轮询，避免无效请求与控制台噪音。
+  const canViewMessages = hasPermission(user, PERM_MESSAGE_VIEW) && !isPendingReview;
 
   // 防重入：轮询与窗口聚焦可能同时触发，避免并发请求交错写入造成数字抖动
   const inFlightRef = useRef(false);

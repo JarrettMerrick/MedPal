@@ -91,8 +91,12 @@ def init_default_admin(db: Session) -> bool:
         is_active=True,
     )
     db.add(admin)
+    # [修复 2026-09-19] 不再把初始口令写入日志。
+    # 原实现将 DEFAULT_ADMIN_PASSWORD 明文打进运行日志（会随日志轮转长期留存），
+    # 违反「日志不得输出机密信息」原则。口令来源见模块常量与部署文档，
+    # 且该账号 must_change_password=True，首次登录即强制改密。
     logger.info(
-        "已自动创建默认管理员: 工号=%s，初始口令=%s（首次登录须修改密码）",
-        DEFAULT_ADMIN_ID, DEFAULT_ADMIN_PASSWORD,
+        "已自动创建默认管理员: 工号=%s（初始口令见部署说明，首次登录须修改密码）",
+        DEFAULT_ADMIN_ID,
     )
     return True

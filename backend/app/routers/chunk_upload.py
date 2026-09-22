@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 import os
 import uuid
 import shutil
@@ -24,6 +25,10 @@ from app.services.staff_service import get_staff, update_staff
 from app.services import notification_center
 from app.schemas.staff import StaffUpdate
 from app.utils import utc_now
+
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/upload", tags=["分片上传"])
 
@@ -51,8 +56,11 @@ def _check_chunks_disk_quota() -> None:
         for fn in filenames:
             try:
                 total_size += os.path.getsize(os.path.join(dirpath, fn))
-            except OSError:
-                pass
+            except OSError as e:
+                # [修正 2026-09-21 / 代码质量审计 Q-3] 原为静默 pass。
+                # 单个文件取大小失败不影响总量统计（该文件被略过），属可忽略情况，
+                # 但静默会让"统计值为何偏小"无从解释，故降为 debug 留痕。
+                logger.debug("统计分片大小失败（已跳过该文件）: %s: %s", fn, e)
     if total_size > MAX_CHUNKS_TOTAL_SIZE:
         raise HTTPException(
             status_code=507,
@@ -204,6 +212,9 @@ def get_upload_status(
     ).first()
     if not session:
         raise HTTPException(404, "上传会话不存在或已过期")
+    # [修复 2026-09-17] 补会话归属校验：复用与 init/complete 相同的权限 + 数据范围口径，
+    # 原先仅需登录，已知 upload_id 的任意账号可读取他人上传会话（进度/文件类型/工号）
+    _check_upload_permission(current_user, session.entity_type, session.entity_id, db, session.photo_type)
     received = session.get_received()
     return {
         "upload_id": session.upload_id,
@@ -230,6 +241,10 @@ async def upload_chunk(
     ).first()
     if not session:
         raise HTTPException(404, "上传会话不存在或已过期")
+
+    # [修复 2026-09-17] 补会话归属校验：复用与 init/complete 相同的权限 + 数据范围口径，
+    # 原先仅需登录，已知 upload_id 的任意账号可向他人活跃会话续传写入分片
+    _check_upload_permission(current_user, session.entity_type, session.entity_id, db, session.photo_type)
 
     if chunk_index < 0 or chunk_index >= session.total_chunks:
         raise HTTPException(400, f"分片索引 {chunk_index} 无效，范围 0-{session.total_chunks - 1}")
@@ -395,7 +410,11 @@ def complete_upload(
     except HTTPException:
         raise
     except Exception:
-        pass  # 格式检测失败不阻止后续验证
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # --- 验证文件（非卡片检查分辨率） ---
     if photo_type != "card":
@@ -415,11 +434,11 @@ def complete_upload(
         except HTTPException:
             raise
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"PIL无法解析图片文件 (filename={session.original_filename}, path={final_path}, "
-                         f"size={os.path.getsize(final_path) if os.path.exists(final_path) else 'N/A'}): "
-                         f"{type(e).__name__}: {e}")
+            # [修正 2026-09-19] ERROR → WARN：同 upload_service，属用户入参错误而非服务故障
+            # （模块级 logger 已在文件顶部声明，此处直接使用）
+            logger.warning(f"PIL无法解析图片文件 (filename={session.original_filename}, path={final_path}, "
+                           f"size={os.path.getsize(final_path) if os.path.exists(final_path) else 'N/A'}): "
+                           f"{type(e).__name__}: {e}", exc_info=True)
             os.remove(final_path)
             shutil.rmtree(chunk_dir, ignore_errors=True)
             session.status = "expired"
@@ -527,8 +546,7 @@ def complete_upload(
 
             db.commit()
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"发送卡片通知失败: {e}")
+            logger.warning(f"发送卡片通知失败: {e}", exc_info=True)
 
         result = {"card_photo": relative_path, "card_id": new_card.id}
 
@@ -540,8 +558,7 @@ def complete_upload(
         from app.services.upload_service import create_original_copy
         create_original_copy(final_path)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"生成原始副本失败: {e}")
+        logger.warning(f"生成原始副本失败: {e}", exc_info=True)
 
     # [改进] 正式图统一转 RGB 色空间：浏览器不支持 CMYK 等编码的 JPEG 直接解码
     # （会偏色/过暗），转 RGB 后展示与预览颜色正确；orig_ 副本保留原始编码供溯源。
@@ -549,15 +566,13 @@ def complete_upload(
         from app.services.upload_service import convert_to_rgb
         convert_to_rgb(final_path)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"RGB 色空间转换失败: {e}")
+        logger.warning(f"RGB 色空间转换失败: {e}", exc_info=True)
 
     # --- 生成缩略图 ---
     try:
         generate_thumbnail(final_path)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"缩略图生成失败: {e}")
+        logger.warning(f"缩略图生成失败: {e}", exc_info=True)
 
     # --- 清理分片和会话 ---
     shutil.rmtree(chunk_dir, ignore_errors=True)
@@ -589,7 +604,9 @@ def cancel_upload(
     ).first()
     if session:
         # 仅允许对目标实体有上传权限者取消（复用与创建一致的权限校验）
-        _check_upload_permission(current_user, session.entity_type, session.entity_id, db)
+        # [修复 2026-09-17] 补传 session.photo_type：原先缺省 None 会走「人员形象照」分支，
+        # 导致 card 会话的取消权限判定错误（工卡上传者可能无法取消自己的会话）
+        _check_upload_permission(current_user, session.entity_type, session.entity_id, db, session.photo_type)
         session.status = "expired"
         db.commit()
 

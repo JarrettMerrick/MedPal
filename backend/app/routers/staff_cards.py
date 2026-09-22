@@ -1,13 +1,18 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import (
     get_current_user,
-    has_permission, PERM_CARD_UPLOAD,
+    has_permission,
+    # [修复 2026-09-17] 工卡详情/删除补数据范围校验所需的权限常量与工具
+    has_any_permission,
+    PERM_CARD_UPLOAD,
+    PERM_STAFF_VIEW, PERM_STAFF_EDIT, PERM_STAFF_PHOTO_UPLOAD,
 )
 from app.models.user import User
 from app.schemas.staff_card import StaffCardCreate, StaffCardListResponse, StaffCardResponse, StaffCardUpdate
@@ -28,6 +33,8 @@ from app.services.notification_service import create_notification
 # [新增 2026-09-09] 卡片敏感操作审计留痕 + 统一 IP 获取
 from app.services.audit_service import record_audit
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cards", tags=["卡片管理"])
 
@@ -56,6 +63,35 @@ def _can_confirm_card(user: User, card, db: Session) -> bool:
                     return True
     
     return False
+
+
+def _card_in_user_scope(user: User, card, db: Session) -> bool:
+    """[新增 2026-09-17] 工卡归属人员是否处于用户的数据范围内。
+
+    department_scope=all 直接放行；其余角色按人员所属科室走 has_department_access。
+    人员档案缺失或未归属科室时保守返回 False（本人卡片由调用方单独放行，不走本函数）。
+    """
+    from app.dependencies import _get_role_dept_scope, has_department_access
+    if _get_role_dept_scope(user) == "all":
+        return True
+    staff = get_staff(db, card.entity_id)
+    if not staff or not staff.department:
+        return False
+    return has_department_access(user, staff.department, db)
+
+
+def _can_view_card(user: User, card, db: Session) -> bool:
+    """[新增 2026-09-17] 是否可查看指定工卡详情。
+
+    本人始终允许；查看他人卡片需具备人员查看类权限之一
+    （card.upload / staff.view / staff.edit / staff.photo_upload），
+    且处于其科室数据范围内——与列表接口的数据范围过滤口径保持一致。
+    """
+    if card.entity_id == user.employee_id:
+        return True
+    if not has_any_permission(user, PERM_CARD_UPLOAD, PERM_STAFF_VIEW, PERM_STAFF_EDIT, PERM_STAFF_PHOTO_UPLOAD):
+        return False
+    return _card_in_user_scope(user, card, db)
 
 
 @router.post("", response_model=StaffCardResponse, status_code=201)
@@ -116,8 +152,7 @@ async def upload_card(
         raise e
     except Exception as e:
         # [修复/问题6] 内部异常详情不再返回客户端，仅写日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
     
     # 创建卡片记录
@@ -178,7 +213,12 @@ async def upload_card(
         record_audit(db, "card_upload", current_user.employee_id,
                      detail=f"entity={entity_type}/{entity_id}, card_id={card.id}", target=str(card.id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return card
 
@@ -216,7 +256,9 @@ def list_cards(
             query = query.filter(StaffCard.entity_id.in_(staff_ids_subq))
         else:
             # 没有科室归属，只能看自己的卡片
-            entity_id = current_user.employee_id if entity_id is None else entity_id
+            # [修复 2026-09-17] 原实现允许外部传入 entity_id 覆盖「本人」限制，
+            # 无科室账号可用 ?entity_id=<他人工号> 越权查询他人卡片，现强制锁定为本人
+            entity_id = current_user.employee_id
     elif dept_scope == "managed":
         # 管辖科室：显示管辖科室人员的卡片
         managed_dept_ids = get_user_department_scope(current_user, db)
@@ -283,6 +325,11 @@ def get_card_detail(
     card = get_card(db, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
+    # [修复 2026-09-17] 原实现不校验任何权限与数据范围：任意登录用户可通过
+    # 自增 card_id 枚举读取全员工卡详情（工号 / 照片路径 / 上传人与确认人），
+    # 列表做了科室过滤而详情完全没做。现要求本人或具备人员查看类权限且在数据范围内。
+    if not _can_view_card(current_user, card, db):
+        raise HTTPException(status_code=403, detail="无权查看该卡片")
     # [改进] 返回当前用户对该卡片的确认权限，前端据此渲染确认/拒绝按钮
     return {
         "id": card.id,
@@ -351,7 +398,12 @@ def confirm_card_endpoint(
         record_audit(db, "card_confirm", current_user.employee_id,
                      detail=f"card_id={card_id}, entity={card.entity_id}", target=str(card_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return updated_card
 
@@ -419,7 +471,12 @@ def reject_card_endpoint(
         record_audit(db, "card_reject", current_user.employee_id,
                      detail=f"card_id={card_id}, entity={card.entity_id}, reason={update_data.reject_reason or '-'}", target=str(card_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return updated_card
 
@@ -440,6 +497,10 @@ def delete_card_endpoint(
     # 与上传权限收紧保持一致：普通员工只能确认卡片，不能编辑/删除
     if not has_permission(current_user, PERM_CARD_UPLOAD):
         raise HTTPException(status_code=403, detail="无权删除该卡片")
+    # [修复 2026-09-17] 补科室数据范围校验：原实现任意 card.upload 持有者可删除
+    # 其他科室人员的卡片，与上传/确认接口的 can_access_staff 范围校验口径不一致
+    if card.entity_id != current_user.employee_id and not _card_in_user_scope(current_user, card, db):
+        raise HTTPException(status_code=403, detail="无权删除其他科室人员的卡片")
     
     # 删除文件
     delete_file(card.card_photo)
@@ -457,6 +518,11 @@ def delete_card_endpoint(
         record_audit(db, "card_delete", current_user.employee_id,
                      detail=f"card_id={card_id}, entity={card.entity_id}", target=str(card_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return {"message": "卡片删除成功"}

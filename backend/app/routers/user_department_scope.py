@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,8 @@ from app.services.audit_service import record_audit
 # [新增 2026-09-15] 站内信提醒：科室管辖范围变更后通知管理方（超管 + 相关科室管理员）
 from app.services.modification_notify import notify_super_admins
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/user-department-scope", tags=["用户科室权限范围"])
 
@@ -155,7 +158,12 @@ def add_user_department_scope(
         record_audit(db, "dept_scope_add", current_user.employee_id,
                      detail=f"target={employee_id}, dept={dept.name}", target=employee_id, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 科室管辖范围变更后补发站内信（事件：数据范围 / 科室管辖变更）：
     # 赋权直接影响账号能看到/能改的数据范围，是最需要知会的敏感操作之一，
@@ -182,7 +190,12 @@ def add_user_department_scope(
             },
         )
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     
     return UserDepartmentScopeResponse(
         id=scope.id,
@@ -228,7 +241,12 @@ def delete_user_department_scope(
         record_audit(db, "dept_scope_remove", current_user.employee_id,
                      detail=f"target={employee_id}, scope_id={scope_id}", target=employee_id, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 撤销管辖后补发站内信（事件：数据范围 / 科室管辖变更）：
     # 收权同样需要留痕知会（防止「先赋权操作、再悄悄撤销」掩盖越权访问痕迹）。
@@ -255,7 +273,12 @@ def delete_user_department_scope(
             },
         )
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     
     return {"message": "科室关联已删除"}
 
@@ -333,7 +356,12 @@ def update_user_department_scope(
         record_audit(db, "dept_scope_update", current_user.employee_id,
                      detail=f"target={employee_id}, depts={len(scope_update.department_ids)}", target=employee_id, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 管辖范围调整后补发站内信（事件：数据范围 / 科室管辖变更）：
     # 仅在有实际增减时发送（避免「原样提交」也产生无信息量提醒）。
@@ -379,7 +407,12 @@ def update_user_department_scope(
                 },
             )
             db.commit()
-        except Exception: pass
+        except Exception:
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
 
     # 返回更新后的列表
     scope_list = db.query(UserDepartmentScope).filter(

@@ -3,12 +3,17 @@
 # - GET  /api/signage-export/attachments       批量导出设计文件、安装现场照片及标识二维码（zip）
 # - GET  /api/signage-export/import-template   下载导入模板
 # - POST /api/signage-export/import            上传 xlsx 批量导入标识
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from urllib.parse import quote
 from app.database import get_db
-from app.dependencies import get_current_user, has_permission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE
+from app.dependencies import (
+    get_current_user, has_permission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE,
+    # [修复 2026-09-17] 导出范围过滤 + 任务归属可见性所需的工具
+    get_user_department_scope, _get_role_dept_scope,
+)
 from app.models.user import User
 from app.services import signage_export_service as svc
 # [新增 2026-09-09] 导入/导出审计留痕 + 统一 IP 获取
@@ -43,6 +48,24 @@ def _check_view_perm(current_user: User):
         raise HTTPException(status_code=403, detail="权限不足")
 
 
+def _allowed_scope(current_user: User, db: Session):
+    """[新增 2026-09-17] 当前用户的导出科室范围：all 返回 None（不限），其余返回科室 ID 列表"""
+    if _get_role_dept_scope(current_user) == "all":
+        return None
+    return get_user_department_scope(current_user, db)
+
+
+def _task_visible(task: dict, current_user: User) -> bool:
+    """[新增 2026-09-17] 导出任务是否对当前用户可见。
+
+    all 范围（超管）可见全部；其余角色仅可见本人创建的任务。
+    历史任务无 owner 字段，对非超管不可见（避免归属不明任务泄露）。
+    """
+    if _get_role_dept_scope(current_user) == "all":
+        return True
+    return task.get("owner") == current_user.employee_id
+
+
 @router.get("/xlsx")
 def export_xlsx(
     filters: dict = Depends(_common_filters),
@@ -52,7 +75,8 @@ def export_xlsx(
 ):
     """[重构 2026-09-07] 导出标识台账 xlsx"""
     _check_view_perm(current_user)
-    output = svc.export_signages_xlsx(db, **filters)
+    # [修复 2026-09-17] 导出范围与角色科室作用域一致（原先受限角色可导出全院台账）
+    output = svc.export_signages_xlsx(db, allowed_department_ids=_allowed_scope(current_user, db), **filters)
     # [统一时间口径] 下载文件名时间戳统一用北京时间（与维修记录导出等保持一致）
     from app.utils import beijing_now
     filename = f"标识台账_{beijing_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -63,7 +87,12 @@ def export_xlsx(
                      detail=f"format=xlsx, campus={filters.get('campus')}, building={filters.get('building')}, category={filters.get('category')}, status={filters.get('status')}, search={filters.get('search')}",
                      target="xlsx", ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return _file_response(
         output,
         filename,
@@ -80,7 +109,8 @@ def export_csv(
 ):
     """[重构 2026-09-07] 导出标识台账 CSV（utf-8-sig）"""
     _check_view_perm(current_user)
-    output = svc.export_signages_csv(db, **filters)
+    # [修复 2026-09-17] 导出范围与角色科室作用域一致（原先受限角色可导出全院台账）
+    output = svc.export_signages_csv(db, allowed_department_ids=_allowed_scope(current_user, db), **filters)
     # [统一时间口径] 下载文件名时间戳统一用北京时间（与 xlsx 导出口径一致）
     from app.utils import beijing_now
     filename = f"标识台账_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -91,7 +121,12 @@ def export_csv(
                      detail=f"format=csv, campus={filters.get('campus')}, building={filters.get('building')}, category={filters.get('category')}, status={filters.get('status')}, search={filters.get('search')}",
                      target="csv", ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return _file_response(output, filename, "text/csv; charset=utf-8")
 
 
@@ -100,6 +135,8 @@ def export_csv(
 
 from fastapi import BackgroundTasks
 from fastapi.responses import FileResponse
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/attachments/prepare", status_code=202)
@@ -111,12 +148,19 @@ def prepare_attachments(
     filters: dict = Depends(_common_filters),
     request: Request = None,
     current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 补充 db 依赖：既用于计算创建者的导出科室范围，
+    # 同时修复了下方审计调用因缺少 db 变量抛 NameError 被 except 静默吞掉的既有问题
+    db: Session = Depends(get_db),
 ):
     """[新增 2026-09-08] 第一步：创建附件打包任务（后台执行），立即返回 task_id 供轮询"""
     _check_view_perm(current_user)
+    # [修复 2026-09-17] 记录任务归属人 + 创建时的科室范围快照：
+    # 归属用于任务可见性隔离，范围快照供后台打包任务沿用（防止越范围打包）
     task = svc.create_export_task(
         **filters,
         include_design=include_design, include_photo=include_photo, include_qrcode=include_qrcode,
+        owner=current_user.employee_id,
+        allowed_department_ids=_allowed_scope(current_user, db),
     )
     # [修复/问题4] 原实现直接把同步重任务交给 BackgroundTasks，
     # FastAPI 会在响应返回后于**事件循环线程内**调用它；run_export_task 内含大量
@@ -137,29 +181,50 @@ def prepare_attachments(
                      detail=f"task_id={task.get('task_id')}, design={include_design}, photo={include_photo}, qrcode={include_qrcode}",
                      target=task.get("task_id"), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return task
 
 
 @router.get("/attachments/tasks")
 def list_attachments_tasks(current_user: User = Depends(get_current_user)):
-    """[新增 2026-09-08] 列出最近的附件导出任务（含状态/分卷/过期时间）"""
-    return svc.list_export_tasks()
+    """[新增 2026-09-08] 列出最近的附件导出任务（含状态/分卷/过期时间）。
+
+    [修复 2026-09-17] 补权限校验 + 任务归属过滤：原实现仅要求登录且返回全部用户的任务，
+    任何登录账号都可枚举他人的导出行为（筛选条件 / 分卷文件名 / 统计数 / 过期时间）。
+    """
+    _check_view_perm(current_user)
+    owner = None if _get_role_dept_scope(current_user) == "all" else current_user.employee_id
+    return svc.list_export_tasks(owner=owner)
 
 
 @router.get("/attachments/status/{task_id}")
 def attachments_status(task_id: str, current_user: User = Depends(get_current_user)):
-    """[新增 2026-09-08] 第二步：轮询任务状态（processing/done/failed + 分卷列表）"""
+    """[新增 2026-09-08] 第二步：轮询任务状态（processing/done/failed + 分卷列表）。
+
+    [修复 2026-09-17] 补权限校验 + 任务归属校验（非本人任务按"不存在"处理，避免泄露存在性）。
+    """
+    _check_view_perm(current_user)
     m = svc.get_export_task(task_id)
-    if not m:
+    if not m or not _task_visible(m, current_user):
         raise HTTPException(status_code=404, detail="导出任务不存在或已过期")
     return m
 
 
 @router.get("/attachments/download/{task_id}/{filename}")
 def download_attachment_part(task_id: str, filename: str, current_user: User = Depends(get_current_user)):
-    """[新增 2026-09-08] 第二步：下载指定分卷压缩包"""
+    """[新增 2026-09-08] 第二步：下载指定分卷压缩包。
+
+    [修复 2026-09-17] 补任务归属校验：原先任意 signage.view 用户可下载他人任务的分卷。
+    """
     _check_view_perm(current_user)
+    m = svc.get_export_task(task_id)
+    if not m or not _task_visible(m, current_user):
+        raise HTTPException(status_code=404, detail="导出任务不存在或已过期")
     path = svc.get_export_part_path(task_id, filename)
     if not path:
         raise HTTPException(status_code=404, detail="压缩包不存在或已过期清理")
@@ -168,7 +233,11 @@ def download_attachment_part(task_id: str, filename: str, current_user: User = D
 
 @router.get("/import-template")
 def download_import_template(current_user: User = Depends(get_current_user)):
-    """[新增 2026-09-07] 下载标识导入模板（含填写说明页）"""
+    """[新增 2026-09-07] 下载标识导入模板（含填写说明页）。
+
+    [修复 2026-09-17] 补权限校验：模板虽无业务数据，但属标识模块功能，须登录且有标识查看权限。
+    """
+    _check_view_perm(current_user)
     output = svc.build_import_template()
     return _file_response(
         output,
@@ -201,7 +270,12 @@ async def import_signages(
             record_audit(db, "error", current_user.employee_id,
                          detail=f"signage_import_failed: {str(e)}", target="signage_import", ip_address=client_ip)
             db.commit()
-        except Exception: pass
+        except Exception:
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
         raise HTTPException(status_code=400, detail=str(e))
     db.commit()
     # [新增 2026-09-09] 导入审计留痕
@@ -212,5 +286,10 @@ async def import_signages(
                      detail=f"file={file.filename}, imported={summary.get('imported')}, skipped={summary.get('skipped')}, errors={summary.get('errors')}",
                      target=file.filename, ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return result

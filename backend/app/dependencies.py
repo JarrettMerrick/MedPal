@@ -11,6 +11,13 @@ from app.models.user_department_scope import UserDepartmentScope
 from app.services.auth_service import is_token_blacklisted
 from app.utils import decode_token
 
+# [新增 2026-09-21] 本模块此前**完全没有日志**：权限/范围校验是安全关键路径，
+# 出现异常却无任何痕迹可查（代码质量审计曾指出 users.py / auth_service.py /
+# dependencies.py 三个安全相关模块缺日志）。此处补齐模块级 logger。
+import logging
+
+logger = logging.getLogger(__name__)
+
 security = HTTPBearer()
 
 # 角色常量
@@ -56,6 +63,9 @@ PERM_REGULATION_EDIT = "regulation.edit"
 PERM_REGULATION_DELETE = "regulation.delete"
 # 标识管理
 PERM_SIGNAGE_VIEW = "signage.view"
+# [新增 2026-09-18] 标识总览：独立于 signage.view 的权限点。
+# 需求：默认仅「科室管理员」与「超级管理员」拥有，普通员工不可见（导航菜单与页面访问一并受控）。
+PERM_SIGNAGE_OVERVIEW = "signage.overview"
 PERM_SIGNAGE_CREATE = "signage.create"
 PERM_SIGNAGE_EDIT = "signage.edit"
 PERM_SIGNAGE_DELETE = "signage.delete"
@@ -69,6 +79,11 @@ PERM_SIGNAGE_REPAIR = "signage.repair"              # 标识平面 - 维修记�
 PERM_SIGNAGE_CAMPUS = "signage.campus"              # 标识设置 - 院区管理（院区/楼栋/楼层/区域维护）
 PERM_SIGNAGE_CATEGORY = "signage.category"          # 标识设置 - 标识分类设置
 PERM_SIGNAGE_SUPPLIER = "signage.supplier"          # 标识设置 - 供应商设置
+# [新增 2026-09-17] 文件库（设计文件集中管理：分类 / 标签 / 版本 / 回收站 / 标准设计文件）
+PERM_FILE_VIEW = "file.view"                        # 文件库 - 浏览 / 预览 / 下载
+PERM_FILE_UPLOAD = "file.upload"                    # 文件库 - 上传文件
+PERM_FILE_EDIT = "file.edit"                        # 文件库 - 编辑（改名/分类/标签/标准标记、维护分类与标签）
+PERM_FILE_DELETE = "file.delete"                    # 文件库 - 删除（含批量与彻底删除）
 # 用户管理
 PERM_USER_VIEW = "user.view"
 PERM_USER_CREATE = "user.create"
@@ -406,6 +421,94 @@ def has_department_access(user: User, department_name: str, db: Session) -> bool
         return target_dept.id in managed_dept_ids
 
     return False
+
+
+def resolve_department_filter(user: User, db: Session) -> tuple[str | None, bool]:
+    """解析用户的科室数据范围，生成列表查询用的过滤串。
+
+    [新增 2026-09-21 / 代码质量审计 Q-6] 此前这套「取 department_scope →
+    查用户关联科室 → 拼 "||" 过滤串 → 无科室则返回空结果」的逻辑在
+    **四处各写了一遍**：routers/staff.py（列表、离职列表）、routers/users.py（用户列表）、
+    routers/data_io.py（数据核对）。
+
+    这是**安全相关**的重复：过滤逻辑一旦在某处漏改（如新增了一种 scope 取值、
+    或改用新的关联表），那一处就会静默越权或漏查。且每新增一个列表接口都会
+    继续复制第五份。故统一收敛到本函数，供各列表类接口复用。
+
+    返回:
+        (department_filter, is_empty)
+        - department_filter: "内科||外科" 形式的过滤串；None 表示**不限科室**
+          （role.department_scope == "all"）。
+        - is_empty: True 表示该用户**没有任何可访问的科室** ——
+          调用方应直接返回空列表（而不是不加过滤地查全量，那会造成越权）。
+
+    说明:
+        返回值刻意用「过滤串」而非科室 ID 列表 —— 因为 staff.department 是自由
+        文本字段，历史数据中可能存在 departments 表中没有的名称（如"普外科/甲乳外科"），
+        按 ID 过滤会漏掉这些人。用 "||" 拼接的名称串由 service 层按文本 LIKE 匹配，
+        与既有行为一致。
+    """
+    scope = _get_role_dept_scope(user)
+    if scope == "all":
+        return None, False
+
+    managed_dept_ids = get_user_department_scope(user, db)
+    if not managed_dept_ids:
+        return None, True
+
+    from app.models.department import Department
+    dept_names = [
+        d.name for d in db.query(Department).filter(Department.id.in_(managed_dept_ids)).all()
+    ]
+    if not dept_names:
+        return None, True
+
+    return "||".join(dept_names), False
+
+
+def check_signage_department_access(db: Session, user: User, signage) -> None:
+    """校验用户是否位于目标标识的科室数据范围内（越界抛 403）。
+
+    [新增 2026-09-17] 由 routers/signages.py 中的同名私有函数提取为公共函数：
+    标识列表接口早就按 allowed_department_ids 做了科室过滤，但详情 / 历史 / 照片 /
+    巡检 / 维修等读路径普遍只校验权限点、漏挂科室范围，导致受限角色（如
+    department_scope=own 的科室账号）可通过 ID/编码枚举读取其他科室的标识数据。
+    统一收敛到本函数，供 signages / signage_alerts / 其它标识模块复用，避免再次漏挂。
+
+    未归属科室的标识不做范围限制（保持原有行为）。
+
+    [修正 2026-09-21 / 代码质量审计 Q-1] 原实现在校验抛异常时**静默 return 放行**
+    （fail-open），并附注"由端点的权限点兜底"。这条附注是不成立的：
+    权限点只回答"这个角色能不能用标识模块"，**不回答"能不能看这个科室的数据"**
+    —— 后者正是本函数唯一的职责。因此校验异常等于范围限制被整体跳过，
+    受限角色（department_scope=own/managed）可借由触发异常读取其他科室数据。
+
+    现改为 **fail-safe**：异常时记 ERROR 日志并按拒绝处理。
+    代价是数据库异常期间相关接口会返回 403 而非"勉强可用"，
+    但这个代价是必要的 —— 数据范围校验被绕过属于越权，其严重性高于可用性。
+    真正需要可用性时应当修复异常的根因，而不是让校验失效。
+    """
+    dept = getattr(signage, "department", None)
+    dept_name = getattr(dept, "name", None) if dept is not None else None
+    if not dept_name:
+        return
+    try:
+        if has_department_access(user, dept_name, db):
+            return
+    except Exception as e:
+        # 拒绝优先：校验无法完成时不得放行
+        logger.error(
+            "签名标识科室范围校验异常，已按拒绝处理（fail-safe）: "
+            "signage_id=%s, dept=%s, operator=%s, err=%s: %s",
+            getattr(signage, "id", None), dept_name,
+            getattr(user, "employee_id", None), type(e).__name__, e,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="数据范围校验失败，已拒绝访问",
+        )
+    raise HTTPException(status_code=403, detail="无权访问其他科室的标识")
 
 
 def can_access_staff(user: User, staff_work_type: str, staff_department: str, db: Session) -> bool:

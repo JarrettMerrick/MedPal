@@ -43,12 +43,13 @@ const CONTENT_CSS = `
   border-collapse: collapse;
   margin: 12px 0;
 }
+/* [改造 2026-09-19] 表格线与表头底色改引用变量，深色下自动适配 */
 :where(.rich-text-content) table td, :where(.rich-text-content) table th {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--line-soft);
   padding: 8px 12px;
   word-break: break-word;
 }
-:where(.rich-text-content) table th { background-color: #f9fafb; font-weight: 500; }
+:where(.rich-text-content) table th { background-color: var(--accent-soft); font-weight: 500; }
 :where(.rich-text-content) p { margin: 8px 0; }
 :where(.rich-text-content) h1, :where(.rich-text-content) h2, :where(.rich-text-content) h3,
 :where(.rich-text-content) h4, :where(.rich-text-content) h5, :where(.rich-text-content) h6 {
@@ -56,7 +57,8 @@ const CONTENT_CSS = `
   font-weight: 600;
 }
 :where(.rich-text-content) ul, :where(.rich-text-content) ol { margin: 8px 0; padding-left: 24px; }
-:where(.rich-text-content) a { color: #1565B8; }
+/* [改造 2026-09-19] 链接色改用品牌强调色变量 */
+:where(.rich-text-content) a { color: var(--accent); }
 :where(.rich-text-content) pre, :where(.rich-text-content) code {
   white-space: pre-wrap !important;
   word-break: break-word;

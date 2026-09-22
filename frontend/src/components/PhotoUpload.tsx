@@ -382,7 +382,8 @@ const UploadProgressModal: React.FC<UploadProgressModalProps> = ({
         <Progress
           percent={progress}
           status={status === 'error' ? 'exception' : status === 'success' ? 'success' : 'active'}
-          strokeColor={status === 'error' ? '#ff4d4f' : '#0E7F8A'}
+          /* [改造 2026-09-19] 进度条色改引用变量（深色下自动提亮） */
+          strokeColor={status === 'error' ? 'var(--danger)' : 'var(--accent)'}
           showInfo={false}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
@@ -723,24 +724,25 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
             onDragOver={(e) => {
               e.preventDefault();
               // [修复 2026-09-15] 无上传权限时不显示拖拽高亮，避免误导可上传
-              if (!disabled) e.currentTarget.style.borderColor = '#0E7F8A';
+              // [改造 2026-09-19] 色值改引用变量（深色下边框与高亮自动适配）
+              if (!disabled) e.currentTarget.style.borderColor = 'var(--accent)';
             }}
-            onDragLeave={(e) => { e.currentTarget.style.borderColor = '#d9d9d9'; }}
+            onDragLeave={(e) => { e.currentTarget.style.borderColor = 'var(--line-soft)'; }}
             onDrop={(e) => {
               e.preventDefault();
-              e.currentTarget.style.borderColor = '#d9d9d9';
+              e.currentTarget.style.borderColor = 'var(--line-soft)';
               // [修复 2026-09-15] 禁用态（无「照片上传」权限）忽略拖拽，与点击/文件选择框拦截保持一致
               if (disabled) return;
               const files = e.dataTransfer.files;
               if (files.length > 0) handleFileSelected(files[0]);
             }}
           >
-            <InboxOutlined style={{ fontSize: 36, color: '#BFBFBF' }} />
+            <InboxOutlined style={{ fontSize: 36, color: 'var(--text-3)' }} />
             {/* [调整 2026-09-15] 无上传权限时明确提示不可上传及授权路径，不留「可点但无反应」的困惑 */}
-            <p style={{ marginTop: 8, color: '#999' }}>
+            <p style={{ marginTop: 8, color: 'var(--text-3)' }}>
               {disabled ? '暂无可上传权限' : '点击或拖拽上传照片'}
             </p>
-            <p style={{ fontSize: 12, color: '#BFBFBF', marginTop: 4 }}>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
               {disabled ? '如需上传请联系管理员授权' : '支持 JPG/PNG/WebP 格式'}
             </p>
           </div>
@@ -826,7 +828,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({
       {/* Hover 效果 CSS-in-JS */}
       <style>{`
         .photo-upload-hover-actions:hover { opacity: 1 !important; }
-        .photo-upload-dragger:hover { border-color: #0E7F8A !important; }
+        .photo-upload-dragger:hover { border-color: var(--accent) !important; }
       `}</style>
     </div>
   );

@@ -2,7 +2,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, status
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.dependencies import get_current_user, has_permission, require_any_permission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_CREATE, PERM_SIGNAGE_EDIT, PERM_SIGNAGE_DELETE, get_user_department_scope, _get_role_dept_scope
+from app.dependencies import get_current_user, has_permission, require_any_permission, PERM_SIGNAGE_VIEW, PERM_SIGNAGE_OVERVIEW, PERM_SIGNAGE_CREATE, PERM_SIGNAGE_EDIT, PERM_SIGNAGE_DELETE, get_user_department_scope, _get_role_dept_scope, check_signage_department_access
 from app.models.user import User
 from app.models.signage import SignageInspection
 from app.schemas.signage import SignageCreate, SignageUpdate, SignageResponse, SignageListResponse, SignagePhotoCreate, SignagePhotoResponse, SignageHistoryResponse, SignageHistoryListResponse
@@ -14,6 +14,8 @@ from app.models.department import Department
 from app.services.upload_service import save_upload_file, save_signage_design_file, delete_file
 # [新增 2026-09-09] 统一 IP 获取（兼容反向代理）
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +128,14 @@ def get_signage_by_code_api(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """[新增 2026-09-05] 按标识编码精确查询（移动巡检手输/扫码用）"""
+    """[新增 2026-09-05] 按标识编码精确查询（移动巡检手输/扫码用）。
+
+    [安全说明 2026-09-17] 本接口**有意不做科室范围限制**：
+    移动端巡检时可能扫到非本科室的标识，需要读取基本信息后由
+    `/api/signage-inspections`（提交巡检）给出「此标识归属 XX 科室管理」的友好提示，
+    因此这里仅要求 signage.view 权限（与巡检提交端点的提示逻辑配套）。
+    按 ID 枚举的详情接口 `GET /api/signages/{signage_id}` 已收紧科室范围。
+    """
     if not has_permission(current_user, PERM_SIGNAGE_VIEW):
         raise HTTPException(status_code=403, detail="权限不足")
     s = get_signage_by_code(db, code)
@@ -143,13 +152,23 @@ def create_signage_endpoint(
     db: Session = Depends(get_db),
 ):
     """[新增 2026-09-03] 创建标识"""
-    s = create_signage(db, data.model_dump(), current_user.employee_id)
+    try:
+        s = create_signage(db, data.model_dump(), current_user.employee_id)
+    except ValueError as exc:
+        # [新增 2026-09-17] 业务校验失败（如引用的设计文件与标识分类不一致）→ 400 并附可操作提示
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
     try:
         client_ip = get_client_ip(request)
         record_audit(db, "signage_create", current_user.employee_id, detail=f"code={s.code}", target=str(s.id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_signage_change(
         db, current_user, s.code,
@@ -165,10 +184,14 @@ def signage_overview(
 ):
     """[新增 2026-09-09] 标识总览聚合数据：KPI / 分类·院区·楼栋分布 / 维修概况 / 最近动态。
 
-    供「标识总览」页一次拉取全部统计，避免前端拼装多个接口；权限与标识列表一致（signage.view）。
+    供「标识总览」页一次拉取全部统计，避免前端拼装多个接口。
+
+    [调整 2026-09-18] 权限由 signage.view 改为**独立的 signage.overview**：
+    需求为标识总览仅科室管理员与超级管理员可见，不再对所有可查看标识的角色开放。
+
     注意：本接口必须声明在 `/{signage_id}` 之前，否则会被通配路由匹配为标识详情。
     """
-    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
+    if not has_permission(current_user, PERM_SIGNAGE_OVERVIEW):
         raise HTTPException(status_code=403, detail="权限不足")
     from app.services.signage_overview_service import build_overview
     return build_overview(db)
@@ -181,8 +204,11 @@ def signage_inspection_trend(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """[新增 2026-09-09] 巡检提交量趋势：按北京日期逐日统计，区间最多 90 天。"""
-    if not has_permission(current_user, PERM_SIGNAGE_VIEW):
+    """[新增 2026-09-09] 巡检提交量趋势：按北京日期逐日统计，区间最多 90 天。
+
+    [调整 2026-09-18] 与总览接口同权限（signage.overview）：本接口只服务于总览页的趋势图。
+    """
+    if not has_permission(current_user, PERM_SIGNAGE_OVERVIEW):
         raise HTTPException(status_code=403, detail="权限不足")
     from datetime import datetime as dt, timedelta
     from app.services.signage_overview_service import inspection_trend
@@ -212,12 +238,32 @@ def get_signage_endpoint(
     s = get_signage(db, signage_id)
     if not s:
         raise HTTPException(status_code=404, detail="标识不存在")
+    # [修复 2026-09-17] 补科室数据范围校验：列表接口早已按 allowed_department_ids 过滤，
+    # 但详情原先只校验权限点，受限角色（department_scope=own）可通过 ID 枚举读取他科室标识
+    _check_signage_department_access(db, current_user, s)
     # [新增 2026-09-07] 计算最近一次巡检日期并挂载到对象上，供详情页展示
     latest = db.query(SignageInspection).filter(
         SignageInspection.signage_id == s.id
     ).order_by(SignageInspection.inspection_date.desc()).first()
     s.last_inspection_date = latest.inspection_date if latest else None
     return s
+
+
+def _design_path_shared(db: Session, stored_path: str, exclude_signage_id: int) -> bool:
+    """[新增 2026-09-17] 设计文件是否仍被其它标识引用（共享引用保护）。
+
+    标识设计文件支持引用共享（文件库中的标准设计文件可被多条标识复用），
+    因此替换设计文件前必须确认没有其它标识仍在引用同一路径。
+    校验异常时按「未共享」处理（保持原有行为，由每日孤儿清理兜底）。
+    """
+    if not stored_path:
+        return False
+    try:
+        from app.services.design_file_service import is_path_shared
+        return is_path_shared(db, stored_path, exclude_signage_id=exclude_signage_id)
+    except Exception as exc:
+        logger.warning(f"共享引用检查失败，按未共享处理: {exc}", exc_info=True)
+        return False
 
 
 def _check_signage_department_access(db: Session, user: User, signage) -> None:
@@ -227,21 +273,11 @@ def _check_signage_department_access(db: Session, user: User, signage) -> None:
     原先只校验权限点（signage.edit / signage.delete），完全不校验科室数据范围，
     导致具备 signage.edit 的 A 科室管理员可越权修改、删除 B 科室的标识，
     或向其上传附件。
-    """
-    from app.dependencies import has_department_access
 
-    dept = getattr(signage, "department", None)
-    dept_name = getattr(dept, "name", None) if dept is not None else None
-    if not dept_name:
-        # 未归属科室的标识不做范围限制（保持原有行为）
-        return
-    try:
-        if has_department_access(user, dept_name, db):
-            return
-    except Exception:
-        # 校验异常时不阻断业务，交由权限点兜底
-        return
-    raise HTTPException(status_code=403, detail="无权操作其他科室的标识")
+    [调整 2026-09-17] 实现统一收敛到 app.dependencies.check_signage_department_access，
+    供标识详情 / 历史 / 照片 / 巡检 / 维修等读路径一并复用，避免各路由重复实现或漏挂。
+    """
+    check_signage_department_access(db, user, signage)
 
 
 @router.put("/{signage_id}", response_model=SignageResponse)
@@ -266,7 +302,12 @@ def update_signage_endpoint(
     # 必须在 update 之前取旧值，否则站内信摘要永远比不出差异
     updates = data.model_dump(exclude_unset=True)
     _old_snapshot = {k: getattr(_existing, k, None) for k in updates.keys()}
-    s = update_signage(db, signage_id, updates, current_user.employee_id, oa_number or None, record_history=record_history)
+    try:
+        s = update_signage(db, signage_id, updates, current_user.employee_id, oa_number or None, record_history=record_history)
+    except ValueError as exc:
+        # [新增 2026-09-17] 分类一致性等业务校验失败 → 400；rollback 丢弃本次会话内的改动
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
     if not s:
         raise HTTPException(status_code=404, detail="标识不存在")
     # [新增 2026-09-05] 临时标识必须填写有效期限
@@ -278,7 +319,12 @@ def update_signage_endpoint(
         client_ip = get_client_ip(request)
         record_audit(db, "signage_update", current_user.employee_id, detail=f"oa={oa_number or 'N/A'}", target=str(signage_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed；仅在字段确有变化时发送）
     try:
         changes = []
@@ -328,7 +374,12 @@ def delete_signage_endpoint(
         client_ip = get_client_ip(request)
         record_audit(db, "signage_delete", current_user.employee_id, detail=f"code={code}", target=str(signage_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_signage_change(db, current_user, code, f"删除了标识「{s_name}」", signage_id, s_dept)
     return {"message": "删除成功"}
@@ -345,6 +396,11 @@ def get_history_endpoint(
     """[新增 2026-09-03] 获取标识变更历史"""
     if not has_permission(current_user, PERM_SIGNAGE_VIEW):
         raise HTTPException(status_code=403, detail="权限不足")
+    # [修复 2026-09-17] 补科室数据范围校验（与标识详情口径一致）
+    s = get_signage(db, signage_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="标识不存在")
+    _check_signage_department_access(db, current_user, s)
     items, total = get_signage_history(db, signage_id, page, page_size)
     return SignageHistoryListResponse(total=total, items=items, page=page, page_size=page_size)
 
@@ -381,6 +437,11 @@ def list_photos_endpoint(
     """[新增 2026-09-03] 获取标识照片列表"""
     if not has_permission(current_user, PERM_SIGNAGE_VIEW):
         raise HTTPException(status_code=403, detail="权限不足")
+    # [修复 2026-09-17] 补科室数据范围校验（与标识详情口径一致）
+    s = get_signage(db, signage_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="标识不存在")
+    _check_signage_department_access(db, current_user, s)
     return get_signage_photos(db, signage_id)
 
 
@@ -417,16 +478,29 @@ async def upload_signage_photo(
         logger.error(f"上传标识照片失败: signage_id={signage_id}, code={s.code}, photo_type={photo_type}: {e}", exc_info=True)
         # [修复/问题6] 内部异常详情（磁盘绝对路径、SQLite 错误信息等）不再返回客户端，
         # 仅写入服务端日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
 
     # 更新标识的对应字段
     if photo_type == "design":
         # 如果有旧照片，删除旧文件
-        if s.design_photo:
+        # [新增 2026-09-17] 共享引用保护：旧设计文件可能被其它标识引用（标准设计文件复用），
+        # 仅在无其它标识使用该路径时才清理物理文件，避免误删他人正在使用的文件
+        if s.design_photo and not _design_path_shared(db, s.design_photo, s.id):
             delete_file(s.design_photo)
         s.design_photo = file_path
+        # [新增 2026-09-17] 同步登记到文件库（需求：集中管理所有已上传的设计文件）；
+        # 登记失败不影响上传本身，仅记录日志
+        try:
+            from app.services.design_file_service import register_uploaded_design_file
+            record = register_uploaded_design_file(
+                db, file_path, s,
+                operator=current_user.employee_id, operator_name=current_user.name,
+            )
+            s.design_file_id = record.id if record else None
+        except Exception as register_err:
+            logger.warning(f"设计文件登记到文件库失败（不影响上传）: {register_err}", exc_info=True)
+            s.design_file_id = None
     else:
         # 如果有旧照片，删除旧文件
         if s.installation_photo:
@@ -442,7 +516,12 @@ async def upload_signage_photo(
                      detail=f"code={s.code}, type={photo_type}, file={file.filename}",
                      target=str(signage_id), ip_address=client_ip)
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 补发站内信（事件：signage.changed）
     _notify_signage_change(

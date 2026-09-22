@@ -35,11 +35,11 @@ const SignageHistoryPage: React.FC = () => {
     // [修复 2026-09-09] 枚举值按字段字典转中文（如 status: repair_in_progress → 维修处理中）
     {
       title: '旧值', dataIndex: 'old_value', key: 'old_value', ellipsis: true,
-      render: (v: string, r: HistoryType) => formatSignageFieldValue(r.field_name, v) || <span style={{ color: '#ccc' }}>(空)</span>,
+      render: (v: string, r: HistoryType) => formatSignageFieldValue(r.field_name, v) || <span style={{ color: 'var(--text-placeholder)' }}>(空)</span>,
     },
     {
       title: '新值', dataIndex: 'new_value', key: 'new_value', ellipsis: true,
-      render: (v: string, r: HistoryType) => formatSignageFieldValue(r.field_name, v) || <span style={{ color: '#ccc' }}>(空)</span>,
+      render: (v: string, r: HistoryType) => formatSignageFieldValue(r.field_name, v) || <span style={{ color: 'var(--text-placeholder)' }}>(空)</span>,
     },
     { title: 'OA单号', dataIndex: 'oa_number', key: 'oa_number', width: 120 },
     { title: '变更人', dataIndex: 'changed_by', key: 'changed_by', width: 100 },

@@ -19,6 +19,7 @@ from app.models.signage import Signage
 # [统一时间口径] API/清单时间统一 to_iso_utc（带 Z 的 UTC），读取历史串用 parse_iso_utc
 from app.utils import beijing_now, utc_now, to_iso_utc, parse_iso_utc
 from app.services.upload_service import get_file_path, UPLOAD_ROOT
+from app.services.excel_safety import append_safe, assert_safe_zip
 
 logger = logging.getLogger("hospital")
 
@@ -67,8 +68,15 @@ VALID_ZONE_TYPES = {"院区导视/宣传", "楼栋导视/宣传", "楼层导视/
 VALID_CATEGORY_TYPES = {"标识标牌", "平面宣传"}
 
 
-def _filtered_signages(db: Session, campus=None, building=None, category=None, status=None, search=None):
-    """[新增 2026-09-07] 按条件筛选标识，供数据导出与附件导出共用同一查询口径"""
+def _filtered_signages(db: Session, campus=None, building=None, category=None, status=None, search=None,
+                       allowed_department_ids=None):
+    """[新增 2026-09-07] 按条件筛选标识，供数据导出与附件导出共用同一查询口径。
+
+    [修复 2026-09-17] 新增 allowed_department_ids 科室范围过滤：原先导出完全不限科室，
+    仅有 signage.view 的受限角色（department_scope=own/managed）可导出全院标识台账与附件包，
+    与列表接口（get_signage_list 的 allowed_department_ids）口径不一致。
+    None=不限（超管/all 范围角色）；含未归属科室的标识（与列表过滤口径一致）。
+    """
     q = db.query(Signage)
     if campus:
         q = q.filter(Signage.campus == campus)
@@ -80,6 +88,9 @@ def _filtered_signages(db: Session, campus=None, building=None, category=None, s
         q = q.filter(Signage.status == status)
     if search:
         q = q.filter((Signage.name.like(f"%{search}%")) | (Signage.code.like(f"%{search}%")))
+    if allowed_department_ids is not None:
+        from sqlalchemy import or_
+        q = q.filter(or_(Signage.department_id.in_(allowed_department_ids), Signage.department_id.is_(None)))
     return q.order_by(Signage.code).all()
 
 
@@ -104,17 +115,22 @@ def _row_of(s: Signage):
     return row
 
 
-def export_signages_xlsx(db, campus=None, building=None, category=None, status=None, search=None):
-    """[重构 2026-09-07] 导出标识台账 xlsx（列与导入模板一致，状态为中文名称）"""
-    items = _filtered_signages(db, campus, building, category, status, search)
+def export_signages_xlsx(db, campus=None, building=None, category=None, status=None, search=None,
+                         allowed_department_ids=None):
+    """[重构 2026-09-07] 导出标识台账 xlsx（列与导入模板一致，状态为中文名称）。
+
+    [修复 2026-09-17] 新增 allowed_department_ids：导出范围需与调用角色的科室作用域一致。
+    """
+    items = _filtered_signages(db, campus, building, category, status, search,
+                               allowed_department_ids=allowed_department_ids)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "标识台账"
     headers = [label for _, label in SIGNAGE_COLUMNS]
-    ws.append(headers)
+    append_safe(ws, headers)
     for s in items:
-        ws.append(_row_of(s))
+        append_safe(ws, _row_of(s))
     # 冻结表头并加宽列，便于查看
     ws.freeze_panes = "A2"
     # [调整 2026-09-12] 列宽随「区域」列新增同步补位（区域可多选、名称较长，给 22）
@@ -127,9 +143,14 @@ def export_signages_xlsx(db, campus=None, building=None, category=None, status=N
     return output
 
 
-def export_signages_csv(db, campus=None, building=None, category=None, status=None, search=None):
-    """[重构 2026-09-07] 导出标识台账 CSV（utf-8-sig 保证 Excel 中文不乱码）"""
-    items = _filtered_signages(db, campus, building, category, status, search)
+def export_signages_csv(db, campus=None, building=None, category=None, status=None, search=None,
+                        allowed_department_ids=None):
+    """[重构 2026-09-07] 导出标识台账 CSV（utf-8-sig 保证 Excel 中文不乱码）。
+
+    [修复 2026-09-17] 新增 allowed_department_ids：导出范围需与调用角色的科室作用域一致。
+    """
+    items = _filtered_signages(db, campus, building, category, status, search,
+                               allowed_department_ids=allowed_department_ids)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([label for _, label in SIGNAGE_COLUMNS])
@@ -216,8 +237,16 @@ def _write_manifest(task_id: str, **kwargs):
 
 
 def create_export_task(campus=None, building=None, category=None, status=None, search=None,
-                       include_design=True, include_photo=True, include_qrcode=True) -> dict:
-    """[新增 2026-09-08] 创建导出任务：登记清单（status=processing），打包由后台任务执行"""
+                       include_design=True, include_photo=True, include_qrcode=True,
+                       owner=None, allowed_department_ids=None) -> dict:
+    """[新增 2026-09-08] 创建导出任务：登记清单（status=processing），打包由后台任务执行。
+
+    [修复 2026-09-17] 新增 owner 与 allowed_department_ids：
+    - owner（创建人工号）：任务列表 / 状态 / 下载仅对本人（或超管）可见，
+      原实现任何登录用户都能列出并下载他人的导出包；
+    - allowed_department_ids（创建时的科室范围快照）：后台打包任务沿用该范围，
+      保证受限角色生成的压缩包不包含管辖范围外的标识附件。
+    """
     task_id = uuid.uuid4().hex
     created_at = utc_now()
     os.makedirs(_export_task_dir(task_id), exist_ok=True)
@@ -229,6 +258,8 @@ def create_export_task(campus=None, building=None, category=None, status=None, s
         # （原实现写的是「北京时间格式的当前时刻」，既无时区标记又与清理口径不符）
         created_at=to_iso_utc(created_at),
         expires_at=to_iso_utc(created_at + timedelta(hours=EXPORT_RETENTION_HOURS)),
+        owner=owner,
+        allowed_department_ids=allowed_department_ids,
         filters={"campus": campus, "building": building, "category": category,
                  "status": status, "search": search},
         include={"design": include_design, "photo": include_photo, "qrcode": include_qrcode},
@@ -243,7 +274,11 @@ def run_export_task(task_id: str, campus=None, building=None, category=None, sta
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        items = _filtered_signages(db, campus, building, category, status, search)
+        # [修复 2026-09-17] 沿用创建任务时记录的科室范围快照：
+        # 后台任务没有请求上下文，若重新按「不限」打包会绕过创建者的数据范围
+        _manifest = _read_manifest(task_id) or {}
+        items = _filtered_signages(db, campus, building, category, status, search,
+                                   allowed_department_ids=_manifest.get("allowed_department_ids"))
         task_dir = _export_task_dir(task_id)
         counts = {"qrcode": 0, "design": 0, "photo": 0, "missing": 0}
         parts: list[dict] = []
@@ -326,7 +361,11 @@ def run_export_task(task_id: str, campus=None, building=None, category=None, sta
         try:
             _write_manifest(task_id, status="failed", error=str(e))
         except Exception:
-            pass
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
     finally:
         db.close()
 
@@ -344,15 +383,23 @@ def get_export_task(task_id: str) -> dict | None:
     return m
 
 
-def list_export_tasks(limit: int = 20) -> list[dict]:
-    """[新增 2026-09-08] 列出最近的导出任务（按创建时间倒序）"""
+def list_export_tasks(limit: int = 20, owner: str | None = None) -> list[dict]:
+    """[新增 2026-09-08] 列出最近的导出任务（按创建时间倒序）。
+
+    [修复 2026-09-17] 新增 owner 过滤：owner 非 None 时仅返回本人创建的任务。
+    原实现返回全部用户的导出任务清单（含筛选条件、分卷文件名、统计数、过期时间），
+    任何登录用户均可枚举他人导出行为；历史任务（无 owner 字段）对非超管不可见。
+    """
     tasks = []
     if not os.path.isdir(EXPORT_ROOT):
         return tasks
     for tid in os.listdir(EXPORT_ROOT):
         m = get_export_task(tid)  # 复用查询逻辑，顺带刷新分卷实际大小
-        if m:
-            tasks.append(m)
+        if not m:
+            continue
+        if owner is not None and m.get("owner") != owner:
+            continue
+        tasks.append(m)
     tasks.sort(key=lambda m: m.get("created_at", ""), reverse=True)
     return tasks[:limit]
 
@@ -420,8 +467,8 @@ def build_import_template() -> io.BytesIO:
     wb = Workbook()
     ws = wb.active
     ws.title = "标识导入"
-    ws.append([label for _, label in SIGNAGE_COLUMNS])
-    ws.append(IMPORT_EXAMPLE)
+    append_safe(ws, [label for _, label in SIGNAGE_COLUMNS])
+    append_safe(ws, IMPORT_EXAMPLE)
     ws.freeze_panes = "A2"
     # [调整 2026-09-12] 列宽随「区域」列新增同步补位（区域可多选、名称较长，给 22）
     for i, w in enumerate([18, 22, 14, 12, 14, 18, 16, 16, 10, 22, 16, 30, 30, 30, 12, 16, 20, 20, 12, 12, 12, 12], start=1):
@@ -479,6 +526,7 @@ def import_signages_xlsx(db: Session, contents: bytes, created_by: str):
     """
     from app.services.signage_service import generate_signage_code
 
+    assert_safe_zip(contents)
     wb = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))

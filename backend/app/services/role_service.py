@@ -170,6 +170,8 @@ def get_permissions_by_category(db: Session) -> list[dict]:
         "card": "特殊功能",
         # [新增 2026-09-11] 站内信权限分类
         "message": "站内信",
+        # [新增 2026-09-17] 文件库（设计文件集中管理）
+        "file_library": "文件库",
     }
 
     categories = {}

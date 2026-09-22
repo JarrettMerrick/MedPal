@@ -5,14 +5,21 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Query, 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import logging
+# [修复 2026-09-17] 补 os 导入：richtext 富文本图片上传使用 os.path/os.makedirs，
+# 原文件仅在 check_files_exist 内局部导入 os，导致 POST /api/uploads/richtext 抛 NameError（500）
+import os
 
 from app.database import get_db
 from app.dependencies import (
     get_current_user,
     has_permission,
+    # [修复 2026-09-17] 富文本图片上传补权限校验（多场景权限集合）
+    require_any_permission,
     PERM_STAFF_EDIT,
     # [新增 2026-09-15] 照片上传权限：控制为他人上传/更换人员形象照（本人不受限）
     PERM_STAFF_PHOTO_UPLOAD,
+    PERM_SYSTEM_CONFIG, PERM_REGULATION_CREATE, PERM_REGULATION_EDIT,
+    PERM_MESSAGE_SEND, PERM_MESSAGE_BROADCAST,
     get_user_department_scope,
 )
 from app.models.user import User
@@ -31,6 +38,8 @@ from app.services.modification_notify import notify_super_admins
 # [新增 2026-09-11] 照片变更纳入「立即生效 + 追认审核」（科室负责人审）
 from app.models.staff_change import SOURCE_PHOTO
 from app.services.staff_change_service import submit_change
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +120,7 @@ async def upload_photo(
         logger.error(f"上传个人形象照失败: entity={entity_type}/{entity_id}, type={photo_type}, {e}", exc_info=True)
         # [修复/问题6] 内部异常详情（磁盘绝对路径、SQLite 错误信息等）不再返回客户端，
         # 仅写入服务端日志，对外统一文案
-        import logging
-        logging.getLogger(__name__).error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"文件保存失败: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="文件保存失败，请联系管理员")
     
     # 更新数据库（使用统一的 staff 服务）
@@ -182,7 +190,12 @@ async def upload_photo(
                      detail=f"entity={entity_type}/{entity_id}, type={photo_type}, file={file.filename}",
                      target=entity_id, ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return {
         "message": "照片上传成功",
@@ -282,7 +295,12 @@ async def delete_photo(
                      detail=f"entity={entity_type}/{entity_id}, type={photo_type}", target=entity_id,
                      ip_address=get_client_ip(request))
         db.commit()
-    except Exception: pass
+    except Exception:
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     return {"message": "照片删除成功"}
 
@@ -290,7 +308,13 @@ async def delete_photo(
 @router.post("/richtext", tags=["文件上传"])
 async def upload_richtext_image(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    # [修复 2026-09-17] 补权限校验：富文本编辑器用于制度正文（regulation.create/edit）、
+    # 工作台公告（system.config）与站内信正文（message.send/broadcast）。
+    # 原先仅要求登录，任意账号即可无限量上传图片落盘（存储滥用 / 内容托管风险）。
+    current_user: User = Depends(require_any_permission(
+        PERM_SYSTEM_CONFIG, PERM_REGULATION_CREATE, PERM_REGULATION_EDIT,
+        PERM_MESSAGE_SEND, PERM_MESSAGE_BROADCAST,
+    )),
 ):
     """富文本编辑器图片上传：保存后返回可引用的 /uploads/richtext/ 相对 URL。
 
@@ -335,7 +359,6 @@ async def check_files_exist(
     current_user: User = Depends(get_current_user),
 ):
     """批量检查文件是否存在（用于前端判断图片是否丢失）"""
-    import os
     result: dict[str, bool] = {}
     for path in request.paths:
         if not isinstance(path, str) or not path:

@@ -21,6 +21,12 @@ import { getAllDepartments } from '../../api/departments';
 import { WORK_TYPE_OPTIONS, WORK_TYPE_COLOR, WORK_TYPE_LABELS } from '../../types/staff';
 import { formatSize } from '../../utils/format';
 import { useAuth } from '../../contexts/AuthContext';
+// [改进 2026-09-21 / Q-12] 统一错误文案提取：把 `e?.response?.data?.detail || '默认'`
+// 收敛为 getErrorMessage(e, '默认')，类型由 unknown 收窄，字段名写错会在编译期报错。
+import { getErrorMessage } from '../../api/client';
+// [修复 2026-09-17] 功能开关：「制度牌」关闭后隐藏本页的制度导出/导入入口
+// （后端对应接口会返回 403，前端隐藏以保持口径一致）
+import { useFeatures } from '../../contexts/FeaturesContext';
 import PageContainer from '../../components/PageContainer';
 import PageHeader from '../../components/PageHeader';
 // [修复 2026-09-03] 导入标识数据导出组件
@@ -76,6 +82,8 @@ const DataManage: React.FC = () => {
   // [修复 2026-09-01] 新增数据核对功能状态：筛选条件、仅显示缺失开关、核对结果与分页
   const navigate = useNavigate();
   const { user } = useAuth();
+  // [修复 2026-09-17] 单位级功能开关：用于隐藏被关闭模块的相关入口（当前用于「制度牌」）
+  const { isEnabled } = useFeatures();
   const canEditStaff = hasPermission(user, PERM_STAFF_EDIT);
   const VERIFY_WORK_TYPE_OPTIONS = WORK_TYPE_OPTIONS.filter(o => o.value !== 'admin');
   const [verifyPage, setVerifyPage] = useState(1);
@@ -193,6 +201,9 @@ const DataManage: React.FC = () => {
   const handleCleanupSysLogs = async () => {
     modal.confirm({
       title: `确定清理 ${sysLogCleanupDays} 天前的日志？`,
+      // [新增 2026-09-19] 明确告知不可逆与留痕：清理等同删除审计痕迹，
+      // 属最敏感操作之一，二次确认需让操作者知晓后果。
+      content: '清理将永久删除该时间之前的审计记录，无法恢复；该操作本身也会记入审计。请确认已完成必要的备份或导出。',
       okType: 'danger',
       onOk: async () => {
         try {
@@ -239,7 +250,7 @@ const DataManage: React.FC = () => {
       let msg = r.message || '导入成功';
       if (r.warnings?.length > 0) msg += `\n⚠️ ${r.warnings.length} 条警告：${r.warnings.slice(0, 3).join('；')}${r.warnings.length > 3 ? '...' : ''}`;
       show(r.warnings?.length > 0 ? 'error' : 'success', msg);
-    } catch (e: any) { show('error', e?.response?.data?.detail || '导入失败'); }
+    } catch (e) { show('error', getErrorMessage(e, '导入失败')); }
     finally { setImporting(null); setImportProgress(0); }
   };
 
@@ -283,7 +294,7 @@ const DataManage: React.FC = () => {
         <Button type="primary" loading={loading === 'export-staff'} icon={<DownloadOutlined />} onClick={async () => {
           setLoading('export-staff');
           try { await exportStaff({ work_type: expWorkType || undefined, department: expDept || undefined, status: expStatus || undefined, fields: expFields.join(',') }); show('success', '导出完成'); }
-          catch (e: any) { show('error', e?.response?.data?.detail || '导出失败'); }
+          catch (e) { show('error', getErrorMessage(e, '导出失败')); }
           finally { setLoading(null); }
         }}>导出人员信息</Button>
       </Card>
@@ -296,13 +307,15 @@ const DataManage: React.FC = () => {
         }}>导出科室信息</Button>
       </Card>
 
-      {/* 制度导出 */}
-      <Card title={<><span style={{ marginRight: 8 }}>📋</span>制度信息导出</>} style={{ marginBottom: 16 }}>
-        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>导出所有制度名称、类别、版本及时间信息</Text>
-        <Button type="primary" loading={loading === 'export-reg'} icon={<DownloadOutlined />} onClick={async () => {
-          setLoading('export-reg'); try { await exportRegulations(); show('success', '导出完成'); } catch (e: any) { show('error', e?.response?.data?.detail || '导出失败'); } finally { setLoading(null); }
-        }}>导出制度信息</Button>
-      </Card>
+      {/* 制度导出（[修复 2026-09-17] 受「制度牌」功能开关约束：关闭后不显示入口） */}
+      {isEnabled('regulation') && (
+        <Card title={<><span style={{ marginRight: 8 }}>📋</span>制度信息导出</>} style={{ marginBottom: 16 }}>
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>导出所有制度名称、类别、版本及时间信息</Text>
+          <Button type="primary" loading={loading === 'export-reg'} icon={<DownloadOutlined />} onClick={async () => {
+            setLoading('export-reg'); try { await exportRegulations(); show('success', '导出完成'); } catch (e: any) { show('error', e?.response?.data?.detail || '导出失败'); } finally { setLoading(null); }
+          }}>导出制度信息</Button>
+        </Card>
+      )}
 
       {/* 图片打包 */}
       <Card title={<><span style={{ marginRight: 8 }}>🖼️</span>图片打包</>}>
@@ -321,7 +334,7 @@ const DataManage: React.FC = () => {
           }}>创建打包</Button>
         </Space>
         {packages.map(p => (
-          <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#FAFAFA', borderRadius: 8, marginBottom: 4, fontSize: 13 }}>
+          <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--neu-page-bg)', borderRadius: 8, marginBottom: 4, fontSize: 13 }}>
             <Space>
               <Text strong>{p.department_name}</Text>
               <Tag color={p.status === 'completed' ? 'green' : p.status === 'packing' ? 'gold' : 'red'}>{({ packing: '打包中', completed: '完成', expired: '已过期', failed: '失败' })[p.status]}</Tag>
@@ -352,7 +365,10 @@ const DataManage: React.FC = () => {
         { icon: '👥', title: '人员信息导入', tplFn: templateStaff, ref: staffRef, handler: importStaff, label: 'staff', desc: '下载模板填写后上传。已存在工号的员工将被跳过。' },
         { icon: '🏥', title: '科室信息导入', tplFn: templateDepartments, ref: deptRef, handler: importDepartments, label: 'dept', desc: '支持三张工作表：科室信息、特色技术、特色设备。' },
         { icon: '📋', title: '制度信息导入', tplFn: templateRegulations, ref: regRef, handler: importRegulations, label: 'reg', desc: '包含制度名称、所属类别、类别代码、制度内容。版本号自动生成。' },
-      ].map(item => (
+      ]
+        // [修复 2026-09-17] 「制度牌」开关关闭时不下发制度导入入口
+        .filter(item => item.label !== 'reg' || isEnabled('regulation'))
+        .map(item => (
         <Card key={item.label} title={<>{item.icon} {item.title}</>} style={{ marginBottom: 16 }}>
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>{item.desc}</Text>
           <Space>
@@ -391,8 +407,8 @@ const DataManage: React.FC = () => {
 
       <Card title="📁 备份列表" style={{ marginBottom: 16 }}>
         {backups.length === 0 ? <Text type="secondary">暂无备份</Text> : backups.map(b => (
-          <div key={b.filename} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#FAFAFA', borderRadius: 8, marginBottom: 4, fontSize: 13 }}>
-            <div><Text strong style={{ display: 'block' }}>{b.filename}</Text><Text type="secondary" style={{ fontSize: 11 }}>{formatSize(b.size)} · {b.created_at}</Text></div>
+          <div key={b.filename} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--neu-page-bg)', borderRadius: 8, marginBottom: 4, fontSize: 13 }}>
+            <div><Text strong style={{ display: 'block' }}>{b.filename}</Text><Text type="secondary" style={{ fontSize: 12 }}>{formatSize(b.size)} · {b.created_at}</Text></div>
             <Space size={4}>
               <Button size="small" onClick={() => downloadBackupFn(b.filename)}>下载</Button>
               <Button size="small" onClick={() => handleRestore(b.filename)}>恢复</Button>
@@ -482,7 +498,12 @@ const DataManage: React.FC = () => {
     <div>
       <Card title={<><span style={{ marginRight: 8 }}>📋</span>系统日志</>} style={{ marginBottom: 16 }}>
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+          {/* [调整 2026-09-19] 按系统日志规范补充说明：级别口径、脱敏与留痕约定，
+              让查看者能正确理解各等级含义，并知晓导出/清理会被审计 */}
           查看操作日志、系统日志、错误日志。支持按时间范围、类别、级别、关键字筛选。
+          <br />
+          级别口径：<Text strong>INFO</Text>＝关键业务动作；<Text strong>WARN</Text>＝已可预知的异常分支（入参错误、旁路失败等）；<Text strong>ERROR</Text>＝需立即处理的严重故障。
+          日志中的口令、令牌等敏感信息已统一脱敏；导出与清理操作本身也会记入审计。
         </Text>
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={24} sm={6}>

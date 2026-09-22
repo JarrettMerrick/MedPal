@@ -12,7 +12,9 @@ import tempfile
 import urllib.parse
 import uuid
 import zipfile
-from datetime import timedelta
+# [修复 2026-09-17] 补 datetime 导入：导出时的行值序列化使用 isinstance(val, datetime)
+# 判断时间字段，原文件仅导入 timedelta，执行到该分支即抛 NameError（500）
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, File, Request
@@ -42,7 +44,12 @@ from app.models.export_package import ExportPackage
 from app.models.regulation import Regulation, RegulationCategory, RegulationHistory
 from app.config import settings, DATA_ROOT
 # [统一时间口径] API 时间字段 to_iso_utc（带 Z 的 UTC）；导出产物 to_beijing_str / beijing_now
-from app.utils import decode_token, utc_now, to_beijing, get_client_ip, to_iso_utc, to_beijing_str, beijing_now
+# [清理 2026-09-21 / 代码质量审计 Q-14] 移除两个从未使用的导入：
+#   to_beijing     —— 已废弃（utils.py 内带 DeprecationWarning），全站仅剩此处导入
+#   decode_token   —— 本文件正文 0 处使用（令牌解析由中间件与依赖完成）
+# 保留其余导入（utc_now 用 10 处、to_iso_utc 3 处、get_client_ip 5 处、beijing_now 用于导出文件名）。
+# ⚠️ 审计报告另指出的 is_token_blacklisted 经核查**实际在用**，故保留，未按报告删除。
+from app.utils import utc_now, get_client_ip, to_iso_utc, to_beijing_str, beijing_now
 from app.services.audit_service import record_audit, audit_action
 # [新增 2026-09-15] 站内信提醒：数据导入/导出后通知管理方（此前只留痕不提醒）
 from app.services.modification_notify import notify_super_admins
@@ -54,6 +61,10 @@ from app.schemas.staff import (
     StaffVerifyResponse, StaffVerifyItem,
     WORK_TYPE_DOCTOR, WORK_TYPE_NURSE, WORK_TYPE_TECHNICIAN,
 )
+# [安全加固 2026-09-19] Excel 导出统一走 append_safe：阻断公式注入（详见该模块说明）
+from app.services.excel_safety import append_safe, assert_safe_zip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["数据管理"])
 
@@ -79,7 +90,16 @@ def _notify_data_change(
             context={"操作人": operator_name, "对象": obj_label, "变更内容": summary},
         )
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
 
 # [修复] Excel 导入文件校验：大小上限 + 文件头魔数。
@@ -117,11 +137,11 @@ def _write_rows_to_xlsx(columns, rows):
 
     # 写表头（中文列名）
     headers = [label for _, label in columns]
-    ws.append(headers)
+    append_safe(ws, headers)
 
     # 写数据行
     for row in rows:
-        ws.append([row.get(field, "") for field, _ in columns])
+        append_safe(ws, [row.get(field, "") for field, _ in columns])
 
     output = io.BytesIO()
     wb.save(output)
@@ -136,52 +156,23 @@ def _delete_temp_file(path: str):
     try:
         if os.path.exists(path):
             os.unlink(path)
-            logger = logging.getLogger(__name__)
             logger.debug(f"已清理导出临时文件: {path}")
     except OSError as e:
-        logging.getLogger(__name__).warning(f"清理临时文件失败 {path}: {e}")
+        logger.warning(f"清理临时文件失败 {path}: {e}", exc_info=True)
 
 
-# [改进/1.0.9] 导出临时文件专用目录，便于启动时统一清理残留
-TEMP_EXPORT_DIR = DATA_ROOT / "temp_exports"
-
-
-def _ensure_temp_export_dir():
-    """确保临时导出目录存在"""
-    TEMP_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def cleanup_stale_temp_files():
-    """[改进/1.0.9] 应用启动时清理超过1小时的残留临时导出文件。
-
-    正常情况下 BackgroundTasks 会在响应发送后删除临时文件，但以下场景可能导致残留：
-      - 服务器崩溃/重启（BackgroundTasks 未执行）
-      - 客户端提前断开连接（FileResponse 未完成传输）
-      - 文件系统只读（unlink 失败但静默忽略）
-
-    此函数在应用启动时调用，清理上一次运行残留的临时文件。
-    """
-    import time as _time
-    logger = logging.getLogger(__name__)
-    _ensure_temp_export_dir()
-    cleaned_count = 0
-    cutoff_age = 3600  # 1小时
-    try:
-        for f in TEMP_EXPORT_DIR.iterdir():
-            if f.is_file() and f.suffix in (".xlsx", ".zip"):
-                try:
-                    age = _time.time() - f.stat().st_mtime
-                    if age > cutoff_age:
-                        size = f.stat().st_size
-                        f.unlink()
-                        cleaned_count += 1
-                        logger.info(f"清理残留临时文件: {f.name} ({size} bytes, 存留 {age / 60:.0f} 分钟)")
-                except OSError as e:
-                    logger.warning(f"清理残留临时文件失败 {f.name}: {e}")
-        if cleaned_count:
-            logger.info(f"共清理 {cleaned_count} 个残留临时导出文件")
-    except Exception as e:
-        logger.warning(f"扫描临时导出目录失败（非致命）: {e}")
+# [重构 2026-09-21 / 代码质量审计 Q-2] 临时导出目录与残留清理逻辑已抽到
+# services/temp_export_service.py —— 原先它们定义在**路由层**，却被服务层
+# （backup_service 的定时任务）与 main.py 的启动流程导入，构成反向依赖，
+# 迫使导入只能写在函数体内以绕开循环导入。抽出后依赖方向恢复为 router → service。
+#
+# 用 `as` 别名保持本文件内既有调用点（TEMP_EXPORT_DIR / _ensure_temp_export_dir）
+# 一字不改，把改动面压到最小。
+from app.services.temp_export_service import (  # noqa: E402
+    TEMP_EXPORT_DIR,
+    ensure_temp_export_dir as _ensure_temp_export_dir,
+    cleanup_stale_temp_files,
+)
 
 
 def _export_to_file(columns, rows, prefix, background_tasks: BackgroundTasks = None):
@@ -214,23 +205,23 @@ def export_departments(
 
     ws1 = wb.active
     ws1.title = "科室信息"
-    ws1.append(["科室名称", "分类", "科室介绍"])
+    append_safe(ws1, ["科室名称", "分类", "科室介绍"])
     for d in departments:
-        ws1.append([d.name, d.category, d.description or ""])
+        append_safe(ws1, [d.name, d.category, d.description or ""])
 
     ws2 = wb.create_sheet("特色技术")
     # [改进] 增加"备注"列（对应卡片图片 caption），导入后可直接在列表编辑备注
-    ws2.append(["科室名称", "特色技术名称", "详细简介", "排序", "备注"])
+    append_safe(ws2, ["科室名称", "特色技术名称", "详细简介", "排序", "备注"])
     for d in departments:
         for s in d.specialties:
-            ws2.append([d.name, s.name, s.detail or "", s.sort_order, s.caption or ""])
+            append_safe(ws2, [d.name, s.name, s.detail or "", s.sort_order, s.caption or ""])
 
     ws3 = wb.create_sheet("特色设备")
     # [改进] 增加"备注"列（caption）
-    ws3.append(["科室名称", "设备名称", "设备型号", "功能描述", "设备特点", "排序", "备注"])
+    append_safe(ws3, ["科室名称", "设备名称", "设备型号", "功能描述", "设备特点", "排序", "备注"])
     for d in departments:
         for e in d.equipments:
-            ws3.append([d.name, e.name, e.model or "", e.function_description or "", e.features or "", e.sort_order, e.caption or ""])
+            append_safe(ws3, [d.name, e.name, e.model or "", e.function_description or "", e.features or "", e.sort_order, e.caption or ""])
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx", dir=str(TEMP_EXPORT_DIR))
     wb.save(tmp.name)
@@ -241,7 +232,10 @@ def export_departments(
         db, current_user, "data.exported", "科室信息",
         f"导出科室 {len(departments)} 个（含特色技术/设备，xlsx）",
     )
-    filename = f"科室信息_{utc_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # [修正 2026-09-21 / 代码质量审计 Q-9] utc_now → beijing_now：
+    # 下载文件名是给用户看的时间，必须统一北京时间（本文件 L208 早已如此）。
+    # 原实现同类文件名混用两种时区，用户看到的"今天导出"会标成昨天的日期。
+    filename = f"科室信息_{beijing_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return FileResponse(
         path=tmp.name,
         filename=filename,
@@ -398,7 +392,8 @@ def export_images(
         db, current_user, "data.exported", "科室图片",
         f"导出科室「{dept_filter.name}」的照片压缩包（zip）",
     )
-    filename = f"图片打包_{utc_now().strftime('%Y%m%d_%H%M%S')}.zip"
+    # [修正 2026-09-21 / 代码质量审计 Q-9] utc_now → beijing_now（同「科室信息」，下载文件名统一北京时间）
+    filename = f"图片打包_{beijing_now().strftime('%Y%m%d_%H%M%S')}.zip"
     return FileResponse(
         path=tmp.name,
         filename=filename,
@@ -613,7 +608,9 @@ def _build_package_background(package_id: int, department_id: int, photo_types: 
                 pkg2.expires_at = utc_now() + timedelta(days=PACKAGE_RETENTION_DAYS)
                 db2.commit()
         except Exception as e:
-            _logger.error(f"更新打包状态失败 package_id={package_id}: {e}", exc_info=True)
+            # [修正 2026-09-19] ERROR → WARN：属后台打包任务内的收尾步骤失败，
+            # 非启动/核心依赖故障；该异常已被吞掉不影响主流程，保留警告即可。
+            _logger.warning(f"更新打包状态失败 package_id={package_id}: {e}", exc_info=True)
         finally:
             db2.close()
 
@@ -622,7 +619,11 @@ def _build_package_background(package_id: int, department_id: int, photo_types: 
     except Exception as e:
         # 异常时更新为失败状态
         _logger = logging.getLogger("hospital")
-        _logger.error(f"打包失败 package_id={package_id}: {e}", exc_info=True)
+        # [修正 2026-09-19] ERROR → WARN：后台打包任务失败，且该异常已由
+        # task_queue.run_serial 以 ERROR + 堆栈记录过（那里是任务的最终失败点）。
+        # 此处降级为 WARN 仅补充「即将把任务标记为 failed」这一状态变更事实，
+        # 避免同一次失败产生两条 ERROR 告警。
+        _logger.warning(f"打包失败，已标记任务为 failed package_id={package_id}: {e}", exc_info=True)
         db_fail = SessionLocal()
         try:
             pkg_fail = db_fail.query(ExportPackage).filter(ExportPackage.id == package_id).first()
@@ -656,7 +657,8 @@ def create_package(
     dept_name = dept.name
 
     _ensure_export_dir()
-    timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
+    # [修正 2026-09-21 / 代码质量审计 Q-9] utc_now → beijing_now（下载文件名统一北京时间）
+    timestamp = beijing_now().strftime("%Y%m%d_%H%M%S")
     # 替换科室名中的特殊字符，避免文件路径问题
     safe_dept_name = dept_name.replace("/", "_").replace("\\", "_")
     filename = f"图片打包_{safe_dept_name}_{timestamp}.zip"
@@ -760,7 +762,16 @@ def download_package(
         record_audit(db, "export_download", current_user.employee_id,
                      detail=f"package_id={package_id}", target=str(package_id), ip_address=client_ip)
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
     
     pkg = db.query(ExportPackage).filter(ExportPackage.id == package_id).first()
@@ -859,13 +870,13 @@ def template_departments(
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "科室信息"
-    ws1.append(["科室名称", "分类", "科室介绍"])
+    append_safe(ws1, ["科室名称", "分类", "科室介绍"])
 
     ws2 = wb.create_sheet("特色技术")
-    ws2.append(["科室名称", "特色技术名称", "详细简介", "排序", "备注"])
+    append_safe(ws2, ["科室名称", "特色技术名称", "详细简介", "排序", "备注"])
 
     ws3 = wb.create_sheet("特色设备")
-    ws3.append(["科室名称", "设备名称", "设备型号", "功能描述", "设备特点", "排序", "备注"])
+    append_safe(ws3, ["科室名称", "设备名称", "设备型号", "功能描述", "设备特点", "排序", "备注"])
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx", dir=str(TEMP_EXPORT_DIR))
     wb.save(tmp.name)
@@ -898,6 +909,7 @@ async def import_departments(
     if contents[:4] != XLSX_MAGIC and contents[:8] != XLS_MAGIC:
         raise HTTPException(status_code=400, detail="文件内容不是有效的 Excel 文件")
 
+    assert_safe_zip(contents)
     wb = load_workbook(io.BytesIO(contents), read_only=True)
 
     # Sheet1: 科室基本信息
@@ -1162,6 +1174,7 @@ async def import_staff(
         raise HTTPException(400, f"文件超过 {EXCEL_MAX_SIZE_MB}MB 限制")
     if contents[:4] != XLSX_MAGIC and contents[:8] != XLS_MAGIC:
         raise HTTPException(400, "文件内容不是有效的 Excel 文件")
+    assert_safe_zip(contents)
     wb = load_workbook(io.BytesIO(contents), read_only=True)
     ws = wb.active
     rows_list = list(ws.iter_rows(values_only=True))
@@ -1335,6 +1348,7 @@ async def import_regulations(
         raise HTTPException(400, f"文件超过 {EXCEL_MAX_SIZE_MB}MB 限制")
     if contents[:4] != XLSX_MAGIC and contents[:8] != XLS_MAGIC:
         raise HTTPException(400, "文件内容不是有效的 Excel 文件")
+    assert_safe_zip(contents)
     wb = load_workbook(io.BytesIO(contents), read_only=True)
     ws = wb.active
     rows_list = list(ws.iter_rows(values_only=True))
@@ -1571,7 +1585,16 @@ def backup_database(
         record_audit(db, "backup", current_user.employee_id,
                      detail=f"filename={result['filename']}", target=result["filename"], ip_address=client_ip)
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
     return {"message": "备份成功", "filename": result["filename"], "size": result["size"]}
 
@@ -1604,7 +1627,16 @@ def delete_backup(
         record_audit(db, "backup_delete", current_user.employee_id,
                      detail=f"filename={filename}", target=filename, ip_address=client_ip)
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
     return {"message": result["message"]}
 
@@ -1626,7 +1658,16 @@ def restore_database(
         record_audit(db, "restore_request", current_user.employee_id,
                      detail=f"filename={filename}", target=filename, ip_address=client_ip)
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
     from app.services.backup_service import restore_backup
     # [修复] 恢复会重建引擎并替换数据库文件；Windows 下若请求级 session
@@ -1663,7 +1704,16 @@ def download_backup(
         record_audit(db, "backup_download", current_user.employee_id,
                      detail=f"filename={filename}", target=filename, ip_address=client_ip)
         db.commit()
-    except Exception:
+    except Exception as e:
+        # [修正 2026-09-21 / 代码质量审计 Q-3] 原为「仅 rollback、不留任何日志」。
+        # 留痕失败确实不应影响主流程（被记录的操作本身已经成功），但**必须留下痕迹**：
+        # 否则一旦审计链出现缺口，既发现不了、也查不出原因 —— 而"关键操作是否留痕"
+        # 正是事后追责时唯一能依赖的东西。2026-09-19 的静默异常治理只覆盖了
+        # `except: pass` 形态，遗漏了这种"仅 rollback"的写法。
+        logger.warning(
+            "审计留痕写入失败（已回滚，不影响主流程）: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
         db.rollback()
     return FileResponse(
         path=str(backup_path),
@@ -1711,7 +1761,11 @@ async def restore_upload_database(
 
     _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
-    timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
+    # [修正 2026-09-21 / 代码质量审计 Q-9] utc_now → beijing_now：
+    # 该文件名会显示在「备份列表」界面给用户看，同样属于"用户可见的时间"。
+    # 前缀为 upload_，不参与 backup_ 的按天去重逻辑（见 _do_create_backup），
+    # 故调整时区口径不影响保留策略。
+    timestamp = beijing_now().strftime("%Y%m%d_%H%M%S")
     filename = f"upload_{timestamp}.db"
     file_path = _BACKUP_DIR / filename
 
@@ -1792,27 +1846,26 @@ def verify_staff(
     )
 
     # —— 数据范围过滤（复用人员列表 list_staff 的权限逻辑）——
-    department_filter = None
-    from app.dependencies import _get_role_dept_scope
+    # [重构 2026-09-21 / 代码质量审计 Q-6] 统一走公共函数 resolve_department_filter。
+    # 此前这段与 staff.py 的列表接口几乎逐行相同，属复制粘贴 ——
+    # 一旦范围规则调整（如新增 scope 取值），极易只改一处而在此留下越权缺口。
+    from app.dependencies import _get_role_dept_scope, resolve_department_filter
+
     scope = _get_role_dept_scope(current_user)
+    department_filter = None
     if scope == "all":
         if department:
             department_filter = department
     else:
-        managed_dept_ids = get_user_department_scope(current_user, db)
-        if managed_dept_ids:
-            dept_names = [d.name for d in db.query(Department).filter(Department.id.in_(managed_dept_ids)).all()]
-            if dept_names:
-                if department:
-                    if department not in dept_names:
-                        raise HTTPException(status_code=403, detail="无权访问该科室")
-                    department_filter = department
-                else:
-                    department_filter = "||".join(dept_names)
-            else:
-                return empty_response
-        else:
+        department_filter, is_empty = resolve_department_filter(current_user, db)
+        if is_empty:
             return empty_response
+        if department:
+            # 用户主动指定科室时需确认该科室在其范围内（公共函数返回拼接串，此处还原为列表）
+            allowed_dept_names = (department_filter or "").split("||")
+            if department not in allowed_dept_names:
+                raise HTTPException(status_code=403, detail="无权访问该科室")
+            department_filter = department
 
     work_type_filter = None
     from app.dependencies import _get_role_work_type_scope

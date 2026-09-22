@@ -195,14 +195,17 @@ const StaffList: React.FC = () => {
                 <Col key={staff.employee_id} xs={24} sm={12} lg={8} xl={6}>
                   <Card
                     hoverable
-                    style={{ background: token.colorBgContainer, position: 'relative' }}
+                    style={{
+                      position: 'relative',
+                      /* [改造 2026-09-19] 工种色条由「绝对定位的直角矩形」改为卡片左边框。
+                         原因：新拟物把卡片圆角提升到 20px，而 4px 宽的直角色条会被卡片
+                         裁切成上下断开的细弧，视觉上与卡片脱节。改用 border-left 后，
+                         色条会随卡片圆角自然收窄并融入卡片（CSS 边框的固有行为）。
+                         工种颜色属业务语义色，保持不变。 */
+                      borderLeft: `4px solid ${WORK_TYPE_HEX[staff.work_type] || token.colorBorder}`,
+                    }}
                     styles={{ body: { padding: token.paddingMD } }}
                   >
-                    {/* 左侧工种色条 */}
-                    <div style={{
-                      position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
-                      background: WORK_TYPE_HEX[staff.work_type] || token.colorBorder,
-                    }} />
                     <Row gutter={token.marginSM}>
                       {/* 左侧头像 */}
                       <Col span={12} style={{ height: 120 }}>

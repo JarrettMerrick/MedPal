@@ -279,7 +279,11 @@ const StaffChangeReview: React.FC<{ focusId?: number }> = ({ focusId }) => {
         columns={columns}
         dataSource={items}
         loading={loading}
-        scroll={{ x: 1180 }}
+        // [调整 2026-09-19] 移除固定 scroll={{ x: 1180 }}（详见 RepairRecords 的说明）：
+        // 固定像素值会强制保留横向滚动条。改用 'max-content' 让宽度由内容决定 ——
+        // 内容未超容器时**不出现**滚动条，真的超长时（如超长变更摘要）才允许内部滚动，
+        // 既满足"不出现横向滚动"，又不会把内容硬压成不可读。
+        scroll={{ x: 'max-content' }}
         rowClassName={(r) => (focusId && r.id === focusId ? 'ant-table-row-selected' : '')}
         pagination={{
           current: page,

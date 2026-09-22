@@ -11,6 +11,7 @@
 不再新增冗余写端点。
 """
 
+import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,8 @@ from app.services import branding_service
 from app.services.audit_service import audit_action
 # [新增 2026-09-15] 站内信提醒：品牌设置（Logo）变更后通知超管
 from app.services.modification_notify import notify_super_admins
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["品牌设置"])
 
@@ -79,7 +82,11 @@ async def upload_brand_logo(
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return result
 
 
@@ -120,5 +127,9 @@ def reset_brand_logo(
         )
         db.commit()
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
     return result

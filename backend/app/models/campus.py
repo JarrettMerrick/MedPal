@@ -84,7 +84,16 @@ class Floor(Base):
         nullable=False,
         comment="所属楼栋ID",
     )
-    floor_number = Column(Integer, nullable=False, comment="楼层号")
+    # [调整 2026-09-17] 楼层号由整数改为字符串字母编号：
+    #   地上 F1/F2/F3…（F3 = 三层）、地下 B1/B2/B3…（B1 = 地下一层）
+    # 原实现为整数（负数表示地下），无法表达 B1/F3 这类字母编号。
+    # 存量数字由启动时的幂等迁移 services/floor_number_migrator 转换为字母编号；
+    # SQLite 类型亲和性宽松，旧库该列即使仍是 INTEGER 也能原样存储字符串，
+    # 新库则由 create_all 直接建为 VARCHAR，无需手工改表。
+    floor_number = Column(
+        String(20), nullable=False,
+        comment="楼层号：F1/F2…（地上）、B1/B2…（地下，B1 为地下一层）",
+    )
     floor_name = Column(String(100), nullable=True, comment="楼层名称")
     description = Column(Text, nullable=True, comment="楼层描述")
     is_active = Column(Boolean, default=True, comment="是否启用")

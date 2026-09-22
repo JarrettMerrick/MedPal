@@ -1,6 +1,7 @@
 // [修复 2026-09-05] 标识标记页面：可视化缩放/平移、点击绑定标识、Pin 分类着色、详情/解绑/重绑
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Card, Select, Button, message, Space, Tag, Modal, Table, Input, Typography } from 'antd';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
+import { App, Card, Select, Button, Space, Tag, Modal, Table, Input, Typography } from 'antd';
 import { ZoomInOutlined, ZoomOutOutlined, ReloadOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import {
   getFloorPlanList, getFloorPlanPoints, createFloorPlanPoint, deleteFloorPlanPoint, getSignageList, getSignage,
@@ -67,6 +68,8 @@ const Pin = React.memo(({ point, color, shape, alerted = false, scale = 1, onSel
 ));
 
 const MarkerEditor: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   const [floorPlans, setFloorPlans] = useState<FloorPlan[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<number | undefined>();
   const [points, setPoints] = useState<SignagePoint[]>([]);
@@ -433,10 +436,10 @@ const MarkerEditor: React.FC = () => {
             onClick={onStageClick}
             style={{
               position: 'relative', overflow: 'hidden', height: 600,
-              background: '#f2f4f7', borderRadius: 8,
+              background: 'var(--neu-page-bg)', borderRadius: 8,
               // [修复 2026-09-05] 标记模式下用十字光标提示可放置，其余时候抓取光标提示可平移
               cursor: markerMode ? 'crosshair' : 'grab',
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
             }}
           >
             <div
@@ -466,7 +469,7 @@ const MarkerEditor: React.FC = () => {
             </div>
             {/* [新增 2026-09-09] 标记模式提示条：进入标记模式后顶部提示当前操作 */}
             {markerMode && (
-              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#1565B8', color: '#fff', fontSize: 12.5, padding: '5px 14px', borderRadius: 999, boxShadow: '0 2px 10px rgba(21,101,184,0.35)' }}>
+              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: 'var(--accent)', color: '#fff', fontSize: 12.5, padding: '5px 14px', borderRadius: 999, boxShadow: 'var(--neu-accent-raised)' }}>
                 标记模式：点击地图放置标识
               </div>
             )}
@@ -475,8 +478,8 @@ const MarkerEditor: React.FC = () => {
               style={{
                 position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 20,
                 display: 'flex', alignItems: 'center', gap: 8,
-                background: 'rgba(255,255,255,0.96)', border: '1px solid #e4e9f0',
-                borderRadius: 999, padding: '6px 12px', boxShadow: '0 4px 16px rgba(15,23,42,0.18)',
+                background: 'var(--neu-bg)', border: '1px solid var(--line-soft)',
+                borderRadius: 999, padding: '6px 12px', boxShadow: 'var(--neu-raised-md)',
               }}
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
@@ -485,7 +488,7 @@ const MarkerEditor: React.FC = () => {
                 {markerMode ? '退出标记模式' : '标识标记'}
               </Button>
               <Button size="small" icon={<ZoomOutOutlined />} onClick={zoomOut} title="缩小" />
-              <span style={{ fontSize: 12, color: '#5B6B7B', minWidth: 44, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
+              <span style={{ fontSize: 12, color: 'var(--text-2)', minWidth: 44, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
               <Button size="small" icon={<ZoomInOutlined />} onClick={zoomIn} title="放大" />
               <Button size="small" icon={<ReloadOutlined />} onClick={resetView}>复位</Button>
             </div>
@@ -497,8 +500,8 @@ const MarkerEditor: React.FC = () => {
               <div
                 style={{
                   position: 'absolute', left: 12, bottom: 12, zIndex: 20,
-                  background: 'rgba(255,255,255,0.96)', border: '1px solid #e4e9f0',
-                  borderRadius: 10, boxShadow: '0 4px 16px rgba(15,23,42,0.18)',
+                  background: 'var(--neu-bg)', border: '1px solid var(--line-soft)',
+                  borderRadius: 10, boxShadow: 'var(--neu-raised-md)',
                   padding: legendCollapsed ? '6px 10px' : '9px 12px',
                   maxWidth: 208,
                 }}
@@ -510,8 +513,8 @@ const MarkerEditor: React.FC = () => {
                   title={legendCollapsed ? '展开分类图例' : '收起分类图例'}
                   style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}
                 >
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#3D4A5C' }}>分类图例</span>
-                  <span style={{ fontSize: 11, color: '#8A97A6' }}>{legendCollapsed ? '展开' : '收起'}</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-1)' }}>分类图例</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{legendCollapsed ? '展开' : '收起'}</span>
                 </div>
                 {!legendCollapsed && (
                   <div
@@ -528,7 +531,7 @@ const MarkerEditor: React.FC = () => {
                         </svg>
                         <span
                           style={{
-                            fontSize: 12.5, color: '#3D4A5C',
+                            fontSize: 12.5, color: 'var(--text-1)',
                             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                           }}
                         >
@@ -539,7 +542,7 @@ const MarkerEditor: React.FC = () => {
                     {/* [新增 2026-09-14] 预警标识样式：不按分类渲染，统一为红色方框 + 感叹号 */}
                     <div
                       style={{
-                        marginTop: 2, paddingTop: 8, borderTop: '1px dashed #E4E9F0',
+                        marginTop: 2, paddingTop: 8, borderTop: '1px dashed var(--line-soft)',
                         display: 'flex', alignItems: 'center', gap: 8,
                       }}
                     >
@@ -560,7 +563,7 @@ const MarkerEditor: React.FC = () => {
             )}
           </div>
         ) : (
-          <div style={{ height: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed #d9d9d9', borderRadius: 8, color: '#999' }}>
+          <div style={{ height: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed var(--line-soft)', borderRadius: 8, color: 'var(--text-3)' }}>
             <Space direction="vertical" align="center">
               <EnvironmentOutlined style={{ fontSize: 32 }} />
               {!floorPlans.length

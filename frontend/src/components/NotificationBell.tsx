@@ -173,7 +173,7 @@ const NotificationBell: React.FC = () => {
           size="small"
           onClick={() => { setOpen(false); navigate('/messages'); }}
         >
-          查看全部站内信 <RightOutlined style={{ fontSize: 10 }} />
+          查看全部站内信 <RightOutlined style={{ fontSize: 12 }} />
         </Button>
       </div>
     </div>

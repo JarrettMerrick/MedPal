@@ -1,7 +1,8 @@
 // [修复 2026-09-04] 标识分类设置页面：维护标识分类选项
 import React, { useState, useEffect } from 'react';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
-  Card, Table, Button, Space, Modal, Form, Input, Select, InputNumber, message,
+  App, Card, Table, Button, Space, Modal, Form, Input, Select, InputNumber,
   Popconfirm, Tag, Breadcrumb, Typography, Row, Col
 } from 'antd';
 import {
@@ -41,9 +42,10 @@ const ColorField: React.FC<{ value?: string; onChange?: (v?: string) => void; id
           title={c}
           onClick={() => onChange?.(c)}
           style={{
+            /* [改造 2026-09-19] 选中环与间隔环改引用变量（色板本身为业务色，保持不变） */
             width: 24, height: 24, borderRadius: '50%', background: c,
-            border: value === c ? '3px solid #0E7F8A' : '2px solid #fff',
-            boxShadow: '0 0 0 1px #d9d9d9', cursor: 'pointer', padding: 0,
+            border: value === c ? '3px solid var(--accent)' : '2px solid var(--neu-bg)',
+            boxShadow: '0 0 0 1px var(--line-soft)', cursor: 'pointer', padding: 0,
           }}
         />
       ))}
@@ -53,7 +55,7 @@ const ColorField: React.FC<{ value?: string; onChange?: (v?: string) => void; id
       addonBefore={
         <span style={{
           display: 'inline-block', width: 16, height: 16, borderRadius: 4,
-          background: isHexColor(value) ? value : '#fff', border: '1px solid #d9d9d9',
+          background: isHexColor(value) ? value : 'var(--neu-bg)', border: '1px solid var(--line-soft)',
         }} />
       }
       placeholder="#RRGGBB"
@@ -66,6 +68,8 @@ const ColorField: React.FC<{ value?: string; onChange?: (v?: string) => void; id
 
 // [修复 2026-09-04] 标识分类设置页面组件
 const SignageCategorySettings: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   // 状态管理
   const [categories, setCategories] = useState<SignageCategory[]>([]);
   const [loading, setLoading] = useState(false);
@@ -102,19 +106,32 @@ const SignageCategorySettings: React.FC = () => {
       title: '分类名称',
       dataIndex: 'name',
       key: 'name',
+      // [调整 2026-09-19] 220 → 140：实测库中分类名称最长仅「温馨提示牌」5 字
+      // （约 70px），220px 有一半以上是空白，属于典型的"列宽与实际内容脱节"。
+      width: 140,
       render: (text: string) => <Text strong>{text}</Text>,
     },
     {
       title: '分类编码',
       dataIndex: 'code',
       key: 'code',
+      // [调整 2026-09-19] 130 → 110：实测编码最长 5 字符（「WXTSP」），
+      // 列内是 Tag（自带内边距），110px 已足够并留有换行余量。
+      width: 110,
       render: (text: string) => <Tag color="blue">{text}</Tag>,
     },
     {
       title: '描述',
       dataIndex: 'description',
       key: 'description',
-      ellipsis: true,
+      // [调整 2026-09-19] 去掉 ellipsis，改为**独占剩余空间 + 允许换行**：
+      // 描述是自由文本（实测最长「温馨提示牌（测试分类）」11 字，但业务上会更长），
+      // 原先用省略号截断会让用户看不到完整描述；改为换行后既不截断、也不会撑宽表格。
+      // 不设 width → 由它吸收所有剩余空间，配合全局 .ant-table-wrapper table{width:100%}
+      // 保证表格总宽恒等于容器，不会出现横向滚动。
+      onCell: () => ({
+        style: { whiteSpace: 'normal', wordBreak: 'break-word', minWidth: 140 } as React.CSSProperties,
+      }),
     },
     {
       // [修复 2026-09-05] 标记样式列：形状 + 颜色组合预览，与平面图标记展示一致
@@ -153,9 +170,21 @@ const SignageCategorySettings: React.FC = () => {
       title: '更新时间',
       dataIndex: 'updated_at',
       key: 'updated_at',
-      width: 160,
+      // [调整 2026-09-19] 160 → 110，并改为「日期 / 时间」两行展示：
+      // 完整时间串 19 字符在 110px 内会被折成三行（2026- / 09-19 / 11:20:33），
+      // 两行展示既省宽度又好读（与供应商设置页的处理保持一致）。
+      width: 110,
       // [统一时间口径] 补 render：原实现直接输出后端 UTC 串，比北京时间少 8 小时
-      render: (v: string) => (v ? formatDateTimeStandard(v) : '-'),
+      render: (v: string) => {
+        if (!v) return '-';
+        const [date, time] = formatDateTimeStandard(v).split(' ');
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{date}</div>
+            {time && <div style={{ fontSize: 12, opacity: 0.72 }}>{time}</div>}
+          </div>
+        );
+      },
     },
     {
       title: '操作',
@@ -280,6 +309,9 @@ const SignageCategorySettings: React.FC = () => {
           dataSource={categories}
           rowKey="id"
           loading={loading}
+          // [新增 2026-09-17] 固定表格布局：让「描述」列按剩余空间分配并真正省略，
+          // 避免长描述把表格撑出容器（auto 布局下 ellipsis 不会生效）
+          tableLayout="fixed"
           pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
         />
       </Card>

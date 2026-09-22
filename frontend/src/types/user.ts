@@ -17,6 +17,11 @@ export interface UserInfo {
   // [新增] 当前登录用户是否有关联的员工记录。为 true 时「个人信息」卡片跳转员工详情页；
   // 为 false（如纯管理员）则跳转个人资料页，并避免发起 getStaff 探测请求造成 404 噪音。
   has_staff_record?: boolean;
+  // [新增 2026-09-17] 注册审核状态：
+  //   pending  = 待审核（自助注册后）：可登录，但仅能查看/修改个人信息；
+  //   approved = 已通过：按角色获得完整权限（管理员建号 / 存量账号均为该值）；
+  //   rejected = 已驳回：禁止登录（仅用于状态提示）。
+  review_status?: 'pending' | 'approved' | 'rejected';
 }
 
 export interface UserItem {

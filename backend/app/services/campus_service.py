@@ -7,7 +7,7 @@
 
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case, cast, Integer
 
 from app.models.campus import Campus, Building, Floor, Area
 from app.schemas.campus import (
@@ -17,6 +17,28 @@ from app.schemas.campus import (
     AreaCreate, AreaUpdate, AreaOut,
     CampusTreeNode, BuildingTreeNode, FloorTreeNode, AreaTreeNode
 )
+
+
+def floor_order_expr():
+    """楼层号排序表达式：[新增 2026-09-17] 适配字母编号（F1/F2…、B1/B2…）。
+
+    排序口径（与前端 utils/floor.ts 的 floorSortValue 一致）：
+        B3 < B2 < B1 < F1 < F2 < F3 …
+    即地下层在前、越深越靠前；地上层按层数升序。
+
+    实现：截取第 2 个字符起的数字部分（B1 → 1），地下前缀取负（B1 → -1）。
+    另兼容迁移前的旧编号：旧库中地下层为负数文本（如 "-1"），同样按地下层取负，
+    即使迁移尚未执行（或手工写入旧值）也不会出现排序错乱。
+    历史遗留的其它非规范值截取为空串，SQLite 将 CAST('' AS INTEGER) 视作 0，不会报错。
+    """
+    number_part = cast(func.substr(Floor.floor_number, 2), Integer)
+    return case(
+        # B1/B2…：地下层，B1 → -1
+        (Floor.floor_number.like("B%"), -number_part),
+        # 旧格式负数（"−1" 表示地下一层）：迁移前的过渡兼容
+        (Floor.floor_number.like("-%"), -number_part),
+        else_=number_part,
+    )
 
 
 # ==================== 院区 CRUD ====================
@@ -186,7 +208,7 @@ def get_floors_by_building(db: Session, building_id: int, active_only: bool = Tr
     query = db.query(Floor).filter(Floor.building_id == building_id)
     if active_only:
         query = query.filter(Floor.is_active == True)
-    return query.order_by(Floor.floor_number).all()
+    return query.order_by(floor_order_expr()).all()
 
 
 def get_floors(db: Session, page: int = 1, page_size: int = 20, building_id: int = None) -> Tuple[List[Floor], int]:
@@ -197,7 +219,7 @@ def get_floors(db: Session, page: int = 1, page_size: int = 20, building_id: int
         query = query.filter(Floor.building_id == building_id)
     
     total = query.count()
-    floors = query.order_by(Floor.floor_number).offset((page - 1) * page_size).limit(page_size).all()
+    floors = query.order_by(floor_order_expr()).offset((page - 1) * page_size).limit(page_size).all()
     
     return floors, total
 
@@ -338,7 +360,7 @@ def get_campus_tree(db: Session) -> List[CampusTreeNode]:
             floors = db.query(Floor).filter(
                 Floor.building_id == building.id,
                 Floor.is_active == True
-            ).order_by(Floor.floor_number).all()
+            ).order_by(floor_order_expr()).all()
             
             floor_nodes = []
             for floor in floors:

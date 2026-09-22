@@ -83,6 +83,49 @@ def _get_db_path() -> Path:
     return Path(db_path)
 
 
+def _verify_sqlite_integrity(path: Path) -> tuple[bool, str]:
+    """校验 SQLite 文件的物理与逻辑完整性。返回 (是否通过, 说明文本)。
+
+    [新增 2026-09-21 / 存储审计 D-2、D-3] 备份体系此前**从不校验完整性**：
+    备份可能因磁盘坏道、写入中断、传输损坏而产生一个"存在但已损坏"的文件，
+    而要等到真正恢复时才发现 —— 那时通常已经没有别的可用备份了。
+
+    这是备份体系最危险的失效模式：**静默失效**（文件在、看起来正常、实际不可用）。
+    因此校验必须前置到「生成时」与「恢复前」两个节点：
+
+      - 生成时校验（D-3）：及时发现损坏，当场重试或告警，不至于让当天没有可用备份；
+      - 恢复前校验（D-2）：避免把一个损坏的备份写进正在使用的数据库。
+
+    实现要点：
+      - 以**只读 URI** 打开（`mode=ro`），确保校验动作本身不会修改文件
+        （SQLite 在普通连接下可能触发 WAL 恢复等写操作）；
+      - `PRAGMA integrity_check` 全表扫描校验 B 树结构与索引一致性，
+        正常返回单行 "ok"，异常时返回具体的损坏描述；
+      - 该校验是**全库扫描**，对大库有一定耗时，因此只在上述两个关键节点调用。
+    """
+    import sqlite3
+
+    if not path.exists():
+        return False, "文件不存在"
+    if path.stat().st_size == 0:
+        return False, "文件大小为 0"
+
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            result = (row[0] if row else "") or "unknown"
+        finally:
+            conn.close()
+    except Exception as e:
+        return False, f"校验异常: {type(e).__name__}: {e}"
+
+    if result.lower() == "ok":
+        return True, "ok"
+    # 损坏时 integrity_check 会给出多行描述，取首行即可（完整内容过长且无助于决策）
+    return False, result.splitlines()[0] if result else "未知损坏"
+
+
 def create_backup() -> dict:
     """执行一次备份，返回备份信息。
     
@@ -105,16 +148,56 @@ def _do_create_backup() -> dict:
     backup_path = BACKUP_DIR / filename
 
     try:
-        # 使用SQLite的.backup命令进行安全备份，确保数据一致性
-        source_conn = sqlite3.connect(str(db_path))
-        dest_conn = sqlite3.connect(str(backup_path))
-        try:
-            source_conn.backup(dest_conn)
-            logger.info(f"使用SQLite backup命令完成备份: {filename}")
-        finally:
-            dest_conn.close()
-            source_conn.close()
-        
+        # [改造 2026-09-21 / 存储审计 D-3] 备份 + 完整性校验，最多尝试 2 次。
+        #
+        # 原实现只做 backup 就宣告成功，从不校验 —— 磁盘坏道、写入中断、文件系统
+        # 异常都可能产出一个"存在但已损坏"的备份文件，而**要等到真正恢复时才会发现**。
+        # 那时通常已没有别的可用备份，等于备份体系静默失效。
+        #
+        # 现改为：每次备份后立即 integrity_check；不通过则删除该文件并重试一次。
+        # 两次都失败说明不是偶发问题，记 ERROR + 通知管理员（而不是悄悄返回失败）。
+        verified = False
+        verify_detail = ""
+        for attempt in (1, 2):
+            source_conn = sqlite3.connect(str(db_path))
+            dest_conn = sqlite3.connect(str(backup_path))
+            try:
+                # 使用SQLite的.backup命令进行安全备份，确保数据一致性
+                source_conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
+                source_conn.close()
+
+            verified, verify_detail = _verify_sqlite_integrity(backup_path)
+            if verified:
+                logger.info(f"使用SQLite backup命令完成备份并通过完整性校验: {filename}")
+                break
+
+            logger.warning(
+                f"备份完整性校验未通过（第 {attempt}/2 次）: {filename}, 原因: {verify_detail}"
+            )
+            try:
+                backup_path.unlink(missing_ok=True)  # 不留损坏的备份，避免被误认为可用
+            except OSError as rm_err:
+                logger.warning(f"删除损坏备份失败: {rm_err}", exc_info=True)
+
+        if not verified:
+            # 两次均失败 → 这不是偶发问题，必须让管理员知道「今天没有可用备份」
+            logger.error(
+                f"[CRITICAL] 备份完整性校验连续 2 次失败，本次备份未生成: {filename}, "
+                f"原因: {verify_detail}"
+            )
+            try:
+                _notify_system_admins(
+                    "数据库备份失败",
+                    f"本次备份连续 2 次未通过完整性校验（{verify_detail}），"
+                    "当前没有生成可用备份，请尽快检查磁盘与文件系统状态。",
+                    "critical",
+                )
+            except Exception as notify_err:
+                logger.warning(f"备份失败告警通知未发出: {notify_err}", exc_info=True)
+            return {"success": False, "error": f"备份完整性校验失败: {verify_detail}"}
+
         size = backup_path.stat().st_size
 
         # [修复] 清理旧备份：按日期去重，保留最近 N 天每天 1 份（每日保留最新一份）。
@@ -134,7 +217,9 @@ def _do_create_backup() -> dict:
                 to_delete.append(b)  # 同日旧份 或 超出天数窗口的旧备份
         for old in to_delete:
             old.unlink()
-            logger.info(f"已清理旧备份: {old.name}")
+            # [修正 2026-09-19] 循环内逐条 INFO → DEBUG：符合「禁止在循环中打 INFO」，
+            # 数量已在下方汇总日志中体现，逐条输出只会稀释有用信息。
+            logger.debug(f"已清理旧备份: {old.name}")
 
         # [改进] 清理过期的预恢复备份，避免每次恢复累积完整副本
         _clean_prerestore_backups()
@@ -147,7 +232,7 @@ def _do_create_backup() -> dict:
             "created_at": timestamp,
         }
     except Exception as e:
-        logger.error(f"备份失败: {e}")
+        logger.error(f"备份失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -162,11 +247,16 @@ def _clean_prerestore_backups():
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
-                    logger.info(f"已清理过期预恢复备份: {f.name}")
-            except OSError:
-                pass
+                    logger.debug(f"已清理过期预恢复备份: {f.name}")  # [修正 2026-09-19] 循环内 INFO → DEBUG
+            except OSError as rm_err:
+                # [修正 2026-09-19] 原为静默 pass：单个备份文件删除失败虽不影响整体，
+                # 但完全不留痕会让残留文件无从解释，故降级为 warning 留痕。
+                logger.warning(
+                    "删除过期预恢复备份失败（已忽略，不影响主流程）: %s", f,
+                    exc_info=True,
+                )
     except Exception as e:
-        logger.warning(f"清理预恢复备份失败（非致命）: {e}")
+        logger.warning(f"清理预恢复备份失败（非致命）: {e}", exc_info=True)
 
 
 def clean_orphan_chunks():
@@ -213,11 +303,18 @@ def clean_orphan_chunks():
             if is_orphan:
                 try:
                     shutil.rmtree(d, ignore_errors=True)
-                    logger.info(f"已清理孤儿分片目录: {upload_id}")
+                    logger.debug(f"已清理孤儿分片目录: {upload_id}")  # [修正 2026-09-19] 循环内 INFO → DEBUG
                 except Exception:
-                    pass
+                    # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+                    # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+                    logger.warning(
+                        "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+                    )
     except Exception as e:
-        logger.error(f"清理孤儿分片失败: {e}")
+        # [修正 2026-09-19] 等级由 ERROR 降为 WARN：属每日定时清理任务，
+        # 失败多为文件占用一类可预知情况，次日会重跑；打 ERROR 会持续刷新告警、
+        # 淹没真正的严重问题（ERROR 在配置了告警的系统中会触发通知甚至电话）。
+        logger.warning(f"清理孤儿分片失败: {e}", exc_info=True)
 
 
 def clean_orphan_images():
@@ -245,12 +342,19 @@ def clean_orphan_images():
         finally:
             db.close()
 
-        logger.info(
-            f"孤儿图片清理完成: 删除 {result.get('deleted', 0)} 个文件, "
-            f"释放 {result.get('total_bytes_freed', 0)} bytes"
-        )
+        # [修正 2026-09-21] 原先此处再打一条「孤儿图片清理完成」汇总 ——
+        # 与 delete_orphan_files 内部的汇总日志内容重叠，属「同一事件双层记录」。
+        # 现由内部统一输出（含保护期跳过数与异常目录告警），此处仅在
+        # **实际发生跳过/删除**时补一条简短的调度侧摘要，便于定时任务的日志检索。
+        if result.get("total_orphans") or result.get("skipped_dirs") or result.get("skipped_by_age"):
+            logger.info(
+                f"孤儿清理任务摘要: 删除 {result.get('total_orphans', 0)} 个文件, "
+                f"释放 {result.get('total_bytes_freed', 0)} bytes"
+                + (f", ⚠️ 跳过异常目录 {result.get('skipped_dirs')}" if result.get("skipped_dirs") else "")
+            )
     except Exception as e:
-        logger.error(f"孤儿图片清理失败: {e}")
+        # [修正 2026-09-19] ERROR → WARN：见「清理孤儿分片失败」同因（定时任务，可重跑）
+        logger.warning(f"孤儿图片清理失败: {e}", exc_info=True)
 
 
 def delete_backup(filename: str) -> dict:
@@ -270,7 +374,7 @@ def delete_backup(filename: str) -> dict:
         logger.info(f"已删除备份文件: {filename}")
         return {"success": True, "message": f"已删除备份文件: {filename}"}
     except Exception as e:
-        logger.error(f"删除备份文件失败: {e}")
+        logger.error(f"删除备份文件失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -317,13 +421,43 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
     if not backup_path.exists():
         return {"success": False, "error": "备份文件不存在"}
 
+    # ── [新增 2026-09-21 / 存储审计 D-2] 恢复前校验备份完整性 ──
+    # 这是恢复流程中**最关键的一道闸门**。
+    #
+    # 原实现直接把这个文件的内容写进正在使用的 medical.db。若备份本身损坏
+    # （磁盘坏道、当初备份时写入中断、跨机传输损坏），写入会中途失败，
+    # 而此时**生产库已被写入一半** —— 结果从「备份不可用」恶化为「生产数据也损坏」，
+    # 且必须人工介入才能恢复。
+    #
+    # 因此：先校验，不通过就**在动生产库之前**中止。此时生产库完好无损，
+    # 用户只需换一个备份文件重试即可，不产生任何次生损害。
+    _ok, _detail = _verify_sqlite_integrity(backup_path)
+    if not _ok:
+        logger.error(
+            f"备份文件完整性校验失败，已中止恢复（生产库未做任何改动）: "
+            f"{filename}, 原因: {_detail}"
+        )
+        try:
+            _notify_system_admins(
+                "数据库恢复已中止",
+                f"备份文件 {filename} 未通过完整性校验（{_detail}），"
+                "恢复流程已在写入前中止，现有数据未受影响。请改用其他备份文件。",
+                "critical",
+            )
+        except Exception as notify_err:
+            logger.warning(f"恢复中止告警未发出: {notify_err}", exc_info=True)
+        return {"success": False, "error": f"备份文件已损坏，恢复已中止: {_detail}"}
+
     db_path = _get_db_path()
+    # [新增] 记录预恢复副本路径，供失败时自动回滚使用（原实现仅保留副本待人工处理）
+    _pre_restore_path: Path | None = None
     try:
         import sqlite3
 
         # 先备份当前数据库（预防性）
         timestamp = _bj_fmt()
         pre_restore = BACKUP_DIR / f"prerestore_{timestamp}.db"
+        _pre_restore_path = pre_restore  # [新增] 供外层失败分支自动回滚使用
         if db_path.exists():
             try:
                 src_conn = sqlite3.connect(str(db_path))
@@ -333,14 +467,18 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
                 src_conn.close()
                 logger.info(f"已创建预恢复备份: {pre_restore.name}")
             except Exception as pre_err:
-                logger.warning(f"创建预恢复备份失败（非致命）: {pre_err}")
+                logger.warning(f"创建预恢复备份失败（非致命）: {pre_err}", exc_info=True)
 
         # 1. 释放现有数据库连接
         import app.database as db_module
         try:
             db_module.engine.dispose()
         except Exception:
-            pass
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
 
         # 2. [修复] 直接从备份恢复到 db_path，不再"删除旧文件 + 重命名"。
         #    Windows 下 medical.db 常被 SQLAlchemy 连接池或并发请求持续占用，
@@ -357,7 +495,7 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
             finally:
                 _chk.close()
         except Exception as chk_err:
-            logger.warning(f"恢复前 WAL checkpoint 失败（非致命）: {chk_err}")
+            logger.warning(f"恢复前 WAL checkpoint 失败（非致命）: {chk_err}", exc_info=True)
 
         try:
             src_conn = sqlite3.connect(str(backup_path))
@@ -371,8 +509,20 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
             finally:
                 src_conn.close()
             logger.info(f"已从备份文件直接恢复数据库: {backup_path.name}")
+
+            # ── [新增 2026-09-21 / 存储审计 D-2] 恢复后校验目标库 ──
+            # 恢复前已校验源备份，此处再校验**写入结果**：SQLite backup API 在
+            # 目标磁盘空间不足、文件系统异常等情况下，可能出现"调用成功但写入不完整"。
+            # 此时必须立即发现并回滚，否则应用会带着一个损坏的库继续对外服务。
+            _dst_ok, _dst_detail = _verify_sqlite_integrity(db_path)
+            if not _dst_ok:
+                raise RuntimeError(f"恢复后目标库完整性校验未通过: {_dst_detail}")
+            logger.info("恢复后目标库完整性校验通过")
         except Exception as restore_err:
-            logger.error(f"数据库恢复写入失败: {restore_err}")
+            # [修正 2026-09-19] ERROR → DEBUG：该异常会被向上抛出，由本函数外层
+            # 统一以 ERROR + 堆栈记录（见下方 except）。此处再记 ERROR 属「重复记录
+            # 同一事件」，会让一次失败产生两条告警，故降为 DEBUG 仅保留过程痕迹。
+            logger.debug(f"数据库恢复写入失败，交由外层统一记录: {restore_err}")
             raise restore_err
 
         # 3. [修复/问题10b] 不再热替换全局 engine / SessionLocal。
@@ -385,7 +535,7 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
         try:
             db_module.engine.dispose()
         except Exception as dispose_err:
-            logger.warning(f"恢复后释放数据库连接失败（非致命）: {dispose_err}")
+            logger.warning(f"恢复后释放数据库连接失败（非致命）: {dispose_err}", exc_info=True)
 
         # 4. [修复/问题10a] 「恢复」审计留痕必须在恢复成功之后写入恢复后的新库。
         #    原实现先 record_audit("restore") 再覆盖 medical.db，
@@ -404,16 +554,88 @@ def _restore_backup_impl(filename: str, operator: str | None = None) -> dict:
             finally:
                 sess.close()
         except Exception as audit_err:
-            logger.warning(f"恢复审计留痕失败（非致命）: {audit_err}")
+            logger.warning(f"恢复审计留痕失败（非致命）: {audit_err}", exc_info=True)
 
         # 保留预恢复备份文件（prerestore_*.db），作为恢复失败/发现问题时的回滚点
-        logger.info(f"数据库恢复成功: {filename}，预恢复备份已保留于 {pre_restore.name}")
-
-        logger.info(f"数据库恢复成功: {filename}，引擎已重新初始化")
+        # [修正 2026-09-19] 原为连续两条「数据库恢复成功」（内容重叠且无信息增量），
+        # 合并为一条，同时保留回滚点位置与引擎状态两个关键信息。
+        logger.info(
+            f"数据库恢复成功: {filename}，引擎已重新初始化，"
+            f"预恢复备份保留于 {pre_restore.name}"
+        )
         return {"success": True, "message": f"已从 {filename} 恢复数据"}
     except Exception as e:
         logger.error(f"数据库恢复失败: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+
+        # ── [新增 2026-09-21 / 存储审计 D-2] 失败自动回滚 ──
+        # 原实现在失败时只保留一个 prerestore 副本，**等待人工介入**。
+        # 但恢复失败往往发生在数据已被写入一半的状态，应用此时仍在对外服务，
+        # 期间所有读写都会作用在这个不一致的库上 —— 拖得越久，损害越难收拾。
+        #
+        # 现改为：一旦恢复流程抛错，立即用预恢复副本把库还原到操作前的状态。
+        # 回滚成功后系统即可正常使用（等于"本次恢复没发生过"），
+        # 管理员可从容排查原因、换个备份重试，而不是在故障中抢时间。
+        rollback_note = ""
+        if _pre_restore_path is not None and _pre_restore_path.exists():
+            try:
+                import sqlite3 as _sqlite3
+
+                import app.database as db_module_rb
+
+                try:
+                    db_module_rb.engine.dispose()
+                except Exception:
+                    logger.warning("回滚前释放数据库连接失败（继续尝试回滚）", exc_info=True)
+
+                _src = _sqlite3.connect(str(_pre_restore_path))
+                _dst = _sqlite3.connect(str(db_path), timeout=30)
+                try:
+                    _src.backup(_dst)
+                finally:
+                    _dst.close()
+                    _src.close()
+
+                try:
+                    db_module_rb.engine.dispose()
+                except Exception:
+                    logger.warning("回滚后释放数据库连接失败", exc_info=True)
+
+                _rb_ok, _rb_detail = _verify_sqlite_integrity(db_path)
+                if _rb_ok:
+                    rollback_note = f"，已自动回滚到恢复前状态（{_pre_restore_path.name}）"
+                    logger.info(
+                        f"恢复失败后已自动回滚到恢复前状态: {_pre_restore_path.name}"
+                    )
+                else:
+                    rollback_note = f"，回滚后校验未通过（{_rb_detail}），需人工介入"
+                    logger.error(
+                        f"[CRITICAL] 自动回滚后数据库完整性校验仍未通过: {_rb_detail}，"
+                        f"请立即人工介入，预恢复副本位于 {_pre_restore_path}"
+                    )
+            except Exception as rb_err:
+                rollback_note = f"，自动回滚失败（{rb_err}），需人工介入"
+                logger.error(
+                    f"[CRITICAL] 恢复失败后自动回滚也失败: {rb_err}，"
+                    f"请立即人工介入，预恢复副本位于 {_pre_restore_path}",
+                    exc_info=True,
+                )
+        else:
+            rollback_note = "，且无可用的预恢复副本（恢复前未成功创建），需人工介入"
+            logger.error(
+                "[CRITICAL] 恢复失败且没有可用的预恢复副本，无法自动回滚，请立即人工介入"
+            )
+
+        # 无论自动回滚结果如何都要通知管理员：这是一次严重的失败，必须有人知晓
+        try:
+            _notify_system_admins(
+                "数据库恢复失败",
+                f"从 {filename} 恢复失败：{e}{rollback_note}",
+                "critical",
+            )
+        except Exception as notify_err:
+            logger.warning(f"恢复失败告警未发出: {notify_err}", exc_info=True)
+
+        return {"success": False, "error": f"{e}{rollback_note}"}
 
 
 def scheduled_backup():
@@ -423,7 +645,9 @@ def scheduled_backup():
     if result["success"]:
         logger.info(f"定时备份完成: {result['filename']}")
     else:
-        logger.error(f"定时备份失败: {result.get('error')}")
+        # [修正 2026-09-19] ERROR → WARN：具体失败原因已在 create_backup 内记录，
+        # 此处仅作调度层摘要，重复打 ERROR 会让同一次失败触发两条告警。
+        logger.warning(f"定时备份失败: {result.get('error')}")
 
 
 def clean_expired_packages():
@@ -450,7 +674,7 @@ def clean_expired_packages():
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"清理过期打包文件失败: {e}")
+        logger.warning(f"清理过期打包文件失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
 
 
 def clean_expired_blacklist():
@@ -467,7 +691,7 @@ def clean_expired_blacklist():
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"清理过期 token 黑名单失败: {e}")
+        logger.warning(f"清理过期 token 黑名单失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
 
 
 # ---- [改进] 新增长期运行维护任务 ----
@@ -485,7 +709,7 @@ def checkpoint_wal():
             conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
         logger.info("WAL checkpoint 完成")
     except Exception as e:
-        logger.warning(f"WAL checkpoint 失败（非致命）: {e}")
+        logger.warning(f"WAL checkpoint 失败（非致命）: {e}", exc_info=True)
 
 
 # [改进/1.0.9] WAL 文件大小监控阈值（50MB），超过时强制 checkpoint 防止磁盘波动
@@ -516,9 +740,11 @@ def monitor_wal_size():
             from app.database import engine
             with engine.connect() as conn:
                 conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-            logger.info("WAL checkpoint 完成")
+            # [修正 2026-09-19] 补上下文：与例行的 checkpoint_wal 任务区分开
+            # （两处原文案完全相同，排查时无法判断是例行执行还是超阈值触发）
+            logger.info("WAL 超过阈值，已执行 checkpoint(TRUNCATE)")
     except Exception as e:
-        logger.error(f"监控 WAL 大小失败: {e}")
+        logger.warning(f"监控 WAL 大小失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时监控任务）
 
 
 # [改进] 告警通知去重窗口（秒）：同一级别告警在窗口内不重复发通知，
@@ -577,7 +803,10 @@ def _notify_system_admins(title: str, content: str, level: str):
             db.close()
     except Exception as e:
         # 告警通知失败不能阻断主流程，仅记录日志
-        logger.error(f"发送系统告警通知失败: {e}")
+        # [修正 2026-09-19] ERROR → WARN：与本文件其他「通知类失败」等级保持一致
+        # （创建预恢复备份 / WAL checkpoint / 释放连接 / 审计留痕失败均为 WARN）。
+        # 通知失败本身不该触发告警，否则会形成「告警发不出去→再触发告警」的递归噪音。
+        logger.warning(f"发送系统告警通知失败: {e}", exc_info=True)
 
 
 def check_db_size():
@@ -592,8 +821,11 @@ def check_db_size():
     try:
         size_mb = os.path.getsize(db_path) / 1024 / 1024
         if size_mb > DB_SIZE_CRITICAL_MB:
-            logger.critical(
-                f"数据库文件严重过大: {size_mb:.1f}MB (>{DB_SIZE_CRITICAL_MB}MB)，"
+            # [修正 2026-09-19] critical → error + 显式 [CRITICAL] 标注：
+            # 统一到规范约定的四个等级（DEBUG/INFO/WARN/ERROR），
+            # 由文案标明严重程度，避免第五个等级绕过既有的告警规则配置。
+            logger.error(
+                f"[CRITICAL] 数据库文件严重过大: {size_mb:.1f}MB (>{DB_SIZE_CRITICAL_MB}MB)，"
                 "建议检查数据增长原因或手动执行 VACUUM"
             )
             _notify_system_admins(
@@ -612,7 +844,7 @@ def check_db_size():
         else:
             logger.debug(f"数据库文件大小正常: {size_mb:.1f}MB")
     except Exception as e:
-        logger.error(f"检查数据库大小失败: {e}")
+        logger.warning(f"检查数据库大小失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时巡检任务）
 
 
 def check_disk_space():
@@ -630,8 +862,9 @@ def check_disk_space():
         total_gb = usage.total / (1024 ** 3)
         pct = usage.free / usage.total * 100
         if pct < 10:
-            logger.critical(
-                f"磁盘可用空间严重不足: {free_gb:.1f}GB/{total_gb:.1f}GB ({pct:.1f}%)，"
+            # [修正 2026-09-19] critical → error + [CRITICAL] 标注（同上，统一等级体系）
+            logger.error(
+                f"[CRITICAL] 磁盘可用空间严重不足: {free_gb:.1f}GB/{total_gb:.1f}GB ({pct:.1f}%)，"
                 f"请立即清理！否则数据库将无法写入。"
             )
             _notify_system_admins(
@@ -653,7 +886,7 @@ def check_disk_space():
         else:
             logger.info(f"磁盘空间正常: {free_gb:.1f}GB/{total_gb:.1f}GB ({pct:.1f}%)")
     except Exception as e:
-        logger.warning(f"磁盘空间检查失败（非致命）: {e}")
+        logger.warning(f"磁盘空间检查失败（非致命）: {e}", exc_info=True)
 
 
 def vacuum_database():
@@ -669,7 +902,7 @@ def vacuum_database():
             conn.execute(text("VACUUM"))
         logger.info("VACUUM 完成，数据库空间已回收")
     except Exception as e:
-        logger.warning(f"VACUUM 失败（非致命）: {e}")
+        logger.warning(f"VACUUM 失败（非致命）: {e}", exc_info=True)
 
 
 def clean_old_audit_logs():
@@ -694,7 +927,7 @@ def clean_old_audit_logs():
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"清理过期审计日志失败: {e}")
+        logger.warning(f"清理过期审计日志失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
 
 
 # [改进] 通知保留天数策略：
@@ -749,7 +982,7 @@ def clean_old_notifications():
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"清理过期通知失败: {e}")
+        logger.warning(f"清理过期通知失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
 
 
 def clean_old_regulation_history():
@@ -775,7 +1008,7 @@ def clean_old_regulation_history():
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"清理制度历史版本失败: {e}")
+        logger.warning(f"清理制度历史版本失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
 
 
 # [修复/问题16] 显式指定 UTC 时区。
@@ -865,7 +1098,7 @@ def notify_resigned_accounts():
         finally:
             db.close()
     except Exception as e:
-        logger.warning(f"离职档案清理提醒失败（不影响其他任务）: {e}")
+        logger.warning(f"离职档案清理提醒失败（不影响其他任务）: {e}", exc_info=True)
 
 
 def start_scheduler():
@@ -919,7 +1152,10 @@ def start_scheduler():
     scheduler.add_job(check_disk_space, "cron", hour=0, minute=0, id="disk_space_check", replace_existing=True)
     # [改进] UTC 1:00 = 北京时间 09:00 清理残留临时导出文件。
     # 兜底 BackgroundTasks 未执行/客户端中断导致的 temp_exports 累积（原先仅在应用启动时清理）
-    from app.routers.data_io import cleanup_stale_temp_files
+    # [重构 2026-09-21 / Q-2] 原为 `from app.routers.data_io import ...` ——
+    # service 层反向导入 router 层，为绕开循环依赖只能写在函数体内。
+    # 该逻辑已抽到同层的 services/temp_export_service.py，此处按正常方向导入。
+    from app.services.temp_export_service import cleanup_stale_temp_files
     scheduler.add_job(cleanup_stale_temp_files, "cron", hour=1, minute=0, id="clean_temp_exports", replace_existing=True)
     # [改进/1.0.9] 每月 1 日执行 VACUUM 回收数据库空间
     scheduler.add_job(vacuum_database, "cron", day=1, hour=2, minute=0, id="vacuum_monthly", replace_existing=True)
@@ -945,7 +1181,7 @@ def start_scheduler():
         try:
             prune_rate_limits(db)
         except Exception as e:
-            logger.error(f"清理过期限流记录失败: {e}")
+            logger.warning(f"清理过期限流记录失败: {e}", exc_info=True)  # [修正 2026-09-19] ERROR → WARN（定时清理，可重跑）
         finally:
             db.close()
 

@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 # [修复 2026-09-01] 添加 Request 导入，用于获取客户端 IP 地址记录到系统日志
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,8 @@ from app.services.audit_service import record_audit
 from app.services.modification_notify import notify_super_admins
 # [新增 2026-09-09] 统一 IP 获取（兼容反向代理）
 from app.utils import get_client_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/users", tags=["用户管理"])
 
@@ -73,18 +76,13 @@ def list_users(
         raise HTTPException(status_code=403, detail="权限不足")
     
     # 基于数据范围过滤科室（department_scope=all 时不过滤）
-    department_filter = None
-    scope = current_user.role_obj.department_scope if current_user.role_obj else "own"
-    if scope != "all":
-        managed_dept_ids = get_user_department_scope(current_user, db)
-        if managed_dept_ids:
-            from app.models.department import Department
-            dept_names = [dept.name for dept in db.query(Department).filter(Department.id.in_(managed_dept_ids)).all()]
-            if dept_names:
-                department_filter = "||".join(dept_names)
-        else:
-            # 无科室访问权限，返回空列表
-            return UserListResponse(total=0, items=[], page=page, page_size=page_size)
+    # [重构 2026-09-21 / 代码质量审计 Q-6] 统一走公共函数 resolve_department_filter，
+    # 与人员列表 / 离职列表 / 数据核对使用同一套范围判定，避免各处口径漂移。
+    from app.dependencies import resolve_department_filter
+    department_filter, is_empty = resolve_department_filter(current_user, db)
+    if is_empty:
+        # 无科室访问权限，返回空列表
+        return UserListResponse(total=0, items=[], page=page, page_size=page_size)
     
     # 解析 has_profile 参数
     has_profile_bool = None
@@ -133,7 +131,11 @@ def create_user_endpoint(
                     target=user_in.employee_id, ip_address=client_ip)
        db.commit()
    except Exception:
-       pass
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
 
    # [新增 2026-09-15] 新增账号后补发站内信（事件：新增用户账号）：
 
@@ -169,7 +171,11 @@ def create_user_endpoint(
        )
        db.commit()
    except Exception:
-       pass
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
 
    return user
 
@@ -293,7 +299,11 @@ def update_user_endpoint(
                    },
                )
            except Exception:
-               pass
+               # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+               # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+               logger.warning(
+                   "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+               )
 
    db.commit()
    return user
@@ -349,7 +359,11 @@ def reset_user_password(
        )
        db.commit()
    except Exception:
-       pass
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
    return {"message": "密码已重置", "password": new_password}
 
 
@@ -371,6 +385,12 @@ def delete_user_endpoint(
     user = get_user(db, employee_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    # [修复 2026-09-17] 数据范围检查（与 update / reset-password 端点口径一致）：
+    # 原实现仅校验 user.delete 权限点，任意持有者可删除其他科室乃至全院账号；
+    # 补上基于目标用户所属科室的 has_department_access 校验。
+    if not has_department_access(current_user, user.department or "", db):
+        raise HTTPException(status_code=403, detail="无权删除该用户")
 
     # [新增 2026-09-10] 「至少保留一个超级管理员」校验
     from app.services.admin_initializer import count_super_admins
@@ -423,7 +443,11 @@ def delete_user_endpoint(
                      detail=f"name={user.name} dept={user.department}",
                      target=employee_id, ip_address=client_ip)
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     # [新增 2026-09-15] 删除账号后补发站内信（事件：删除用户账号）：
     # 账号删除不可逆（连带清理 Staff / 工牌 / 照片 / 收件记录），此前只写审计日志。
@@ -453,7 +477,11 @@ def delete_user_endpoint(
             },
         )
     except Exception:
-        pass
+        # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+        # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+        logger.warning(
+            "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+        )
 
     db.delete(user)
     db.commit()
@@ -463,7 +491,11 @@ def delete_user_endpoint(
         try:
             _delete_upload_file(p)
         except Exception:
-            pass
+            # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+            # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+            logger.warning(
+                "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+            )
     return {"message": "用户已删除", "employee_id": employee_id}
 
 
@@ -538,7 +570,11 @@ def batch_create_users(
                     target="batch", ip_address=client_ip)
        db.commit()
    except Exception:
-       pass
+       # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+       # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+       logger.warning(
+           "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+       )
 
    # [新增 2026-09-15] 批量建号后补发站内信（事件：新增用户账号）：
    # 一次操作可能新增数十个账号，此前只写审计日志，管理方不知情。
@@ -567,7 +603,11 @@ def batch_create_users(
            )
            db.commit()
        except Exception:
-           pass
+           # [修复 2026-09-19] 原为静默 pass：异常被完全吞掉会让问题无从定位。
+           # 此处保持「旁路失败不影响主流程」的语义不变，但降级为 warning 并带堆栈留痕。
+           logger.warning(
+               "旁路操作失败（已忽略，不影响主流程）", exc_info=True
+           )
 
    return {"created": created, "skipped": skipped, "message": f"成功创建 {created} 个账号，跳过 {skipped} 个已存在的账号"}
 

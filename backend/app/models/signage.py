@@ -40,6 +40,11 @@ class Signage(Base):
     manufacturer = Column(String(200))
     vendor_contact = Column(String(200))
     design_photo = Column(String(500))
+    # [新增 2026-09-17] 关联「文件管理」中的设计文件记录（引用共享）：
+    # 多条标识可复用同一份标准设计文件（磁盘只存一份）；
+    # design_photo 保留为路径快照，导出 / 详情等既有链路零改动，
+    # 本列用于文件库的引用统计与删除保护。
+    design_file_id = Column(Integer, ForeignKey("design_files.id"), nullable=True, index=True)
     installation_photo = Column(String(500))
     created_by = Column(String(20))
     created_at = Column(DateTime, server_default=func.now())

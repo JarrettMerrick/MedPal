@@ -3,8 +3,9 @@
 // ② 附件批量导出：两步式——先生成后台打包任务（单卷≤500MB 自动分卷），再按分卷下载；压缩包保留 24 小时；
 // ③ 数据导入：下载 xlsx 模板 → 上传模板文件批量导入，展示成功/跳过/逐行错误明细。
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+// [修复 2026-09-17] 移除静态 message：改用 App.useApp() 实例（静态方法无法消费动态主题）
 import {
-  Card, Button, Select, Input, Space, message, Checkbox, Upload, Alert, Divider, Typography, Spin,
+  App, Card, Button, Select, Input, Space, Checkbox, Upload, Alert, Divider, Typography, Spin,
 } from 'antd';
 import {
   DownloadOutlined, FileExcelOutlined, FileTextOutlined, FolderOpenOutlined,
@@ -14,7 +15,8 @@ import type { UploadFile } from 'antd';
 import { campusApi } from '../../api/campus';
 import { getActiveSignageCategories } from '../../api/signage-settings';
 import { SIGNAGE_STATUS_OPTIONS } from '../../constants/signageStatus';
-import api from '../../api/client';
+// [改进 2026-09-21 / Q-12] 统一错误文案提取（detail 优先、按状态码回落、message 兜底）
+import api, { getErrorMessage } from '../../api/client';
 import { formatDateTimeStandard } from '../../utils/time';
 
 const { Text } = Typography;
@@ -52,6 +54,8 @@ async function downloadBlob(url: string, filename: string): Promise<void> {
 }
 
 const SignageExport: React.FC = () => {
+  // [修复 2026-09-17] 从 App context 获取 message：与全局主题、国际化保持一致
+  const { message } = App.useApp();
   // ===== 筛选条件 =====
   const [campus, setCampus] = useState<string>();
   const [building, setBuilding] = useState<string>();
@@ -136,7 +140,7 @@ const SignageExport: React.FC = () => {
       await downloadBlob(`/api/signage-export/${format}?${buildQuery()}`, `标识台账.${format}`);
       message.success('导出成功');
     } catch (e: any) {
-      message.error(e?.message || '导出失败');
+      message.error(getErrorMessage(e, '导出失败'));
     } finally {
       setLoading(false);
     }
@@ -184,7 +188,7 @@ const SignageExport: React.FC = () => {
       startPolling(r.data.task_id);
       loadTasks();
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || e?.message || '创建打包任务失败');
+      message.error(getErrorMessage(e, '创建打包任务失败'));
     } finally {
       setPreparing(false);
     }
@@ -197,7 +201,7 @@ const SignageExport: React.FC = () => {
         filename,
       );
     } catch (e: any) {
-      message.error(e?.message || '下载失败');
+      message.error(getErrorMessage(e, '下载失败'));
     }
   };
 
@@ -214,7 +218,7 @@ const SignageExport: React.FC = () => {
     try {
       await downloadBlob('/api/signage-export/import-template', '标识导入模板.xlsx');
     } catch (e: any) {
-      message.error(e?.message || '模板下载失败');
+      message.error(getErrorMessage(e, '模板下载失败'));
     }
   };
 
@@ -230,7 +234,7 @@ const SignageExport: React.FC = () => {
       setImportResult(data);
       message.success(`导入完成：成功 ${data.created} 条${data.errors?.length ? `，失败 ${data.errors.length} 条` : ''}`);
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || e?.message || '导入失败');
+      message.error(getErrorMessage(e, '导入失败'));
     } finally {
       setImporting(false);
       setFileList([]);
@@ -339,8 +343,8 @@ const SignageExport: React.FC = () => {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {doneTasks.map((t) => (
-                <div key={t.task_id} style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 12 }}>
-                  <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: '#666' }}>
+                <div key={t.task_id} style={{ border: '1px solid var(--line-soft)', borderRadius: 8, padding: 12 }}>
+                  <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: 'var(--text-2)' }}>
                     <span>生成时间：{formatDateTimeStandard(t.created_at)}</span>
                     <span>标识数：{t.total ?? '-'}</span>
                     <span>

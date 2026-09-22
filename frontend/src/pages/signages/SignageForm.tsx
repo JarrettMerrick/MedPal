@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Form, Input, Select, DatePicker, Button, App, Space, Row, Col, Typography, Upload, Image } from 'antd';
+// [新增 2026-09-17] Popconfirm：编辑页「删除标识」二次确认
+import { Form, Input, Select, DatePicker, Button, App, Space, Row, Col, Typography, Upload, Image, Popconfirm } from 'antd';
 import type { UploadProps } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getSignage, createSignage, updateSignage, uploadSignagePhoto } from '../../api/signage';
+// [新增 2026-09-17] deleteSignage：删除入口由标识列表移入本页
+import { getSignage, createSignage, updateSignage, uploadSignagePhoto, deleteSignage } from '../../api/signage';
 import { campusApi } from '../../api/campus';
 // [调整 2026-09-12] 新增 Area 类型：楼层导视/宣传时支持多选所属区域
 import type { Campus, Building, Floor, Area } from '../../types/campus';
@@ -14,6 +16,19 @@ import { getAllDepartments } from '../../api/departments';
 import dayjs from 'dayjs';
 import { InboxOutlined, DeleteOutlined, EyeOutlined, FileOutlined, LeftOutlined } from '@ant-design/icons';
 import { getOriginalUrl } from '../../utils/imageUtils';
+// [调整 2026-09-17] 楼层文本统一走 utils/floor（楼层号已为 F3/B1 字母编号）
+import { floorLabel } from '../../utils/floor';
+// [新增 2026-09-17] 标准设计文件选择器：从文件库搜索并引用标准设计文件（引用共享）
+import StandardFilePicker from '../files/components/StandardFilePicker';
+import type { StandardFileOption } from '../../api/designFiles';
+// [新增 2026-09-17] 删除标识的权限判断（signage.delete）
+import { hasPermission, PERM_SIGNAGE_DELETE, PERM_FILE_VIEW } from '../../utils/permissions';
+import { useAuth } from '../../contexts/AuthContext';
+// [重构 2026-09-21 / Q-8] 标识状态统一引用权威源（原本地副本缺 repair_in_progress）。
+// 说明：本页的状态字段是**只读展示**（无选择控件，状态由巡检/维修流程驱动），
+// 因此只需要 getSignageStatusLabel 取显示名；权威源里的
+// SIGNAGE_STATUS_SELECT_OPTIONS 是为"将来若开放状态编辑"预留的，此处不导入。
+import { getSignageStatusLabel } from '../../constants/signageStatus';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -27,8 +42,8 @@ const styles = {
     padding: '0 16px',
   },
   formCard: {
-    background: '#fff',
-    border: '1px solid #E4E3DD',
+    background: 'var(--neu-bg)',
+    border: '1px solid var(--line-soft)',
     borderRadius: 12,
     padding: '14px 16px',
     marginBottom: 12,
@@ -44,21 +59,21 @@ const styles = {
   sectionIndicator: {
     width: 4,
     height: 14,
-    background: '#3B6FD4',
+    background: 'var(--accent)',
     borderRadius: 2,
     display: 'inline-block',
   },
   formLabel: {
     fontSize: 12,
-    color: '#6B7280',
+    color: 'var(--text-2)',
     marginBottom: 5,
   },
   requiredMark: {
-    color: '#EA6668',
+    color: 'var(--danger)',
   },
   optionalMark: {
-    fontSize: 11,
-    color: '#B0B4C0',
+    fontSize: 12,
+    color: 'var(--text-placeholder)',
   },
   headerBar: {
     display: 'flex',
@@ -66,27 +81,27 @@ const styles = {
     alignItems: 'center',
     gap: 12,
     padding: '12px 16px',
-    background: '#fff',
-    border: '1px solid #E4E3DD',
+    background: 'var(--neu-bg)',
+    border: '1px solid var(--line-soft)',
     borderRadius: 12,
     marginBottom: 12,
   },
   statusBadge: {
     padding: '2px 10px',
-    background: '#E7F6E7',
-    color: '#2F7D32',
+    background: 'var(--ok-soft)',
+    color: 'var(--ok)',
     borderRadius: 20,
     fontSize: 12,
   },
   saveButton: {
-    background: '#3B6FD4',
-    borderColor: '#3B6FD4',
+    background: 'var(--accent)',
+    borderColor: 'var(--accent)',
     borderRadius: 8,
     padding: '8px 18px',
     height: 'auto',
   },
   cancelButton: {
-    border: '1px solid #C9CFE0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
     padding: '8px 18px',
     height: 'auto',
@@ -98,43 +113,43 @@ const styles = {
     justifyContent: 'flex-end',
     gap: 10,
     padding: '12px 16px',
-    background: '#fff',
-    border: '1px solid #E4E3DD',
+    background: 'var(--neu-bg)',
+    border: '1px solid var(--line-soft)',
     borderRadius: 12,
   },
 
   uploadArea: {
-    border: '1px dashed #C9CFE0',
+    border: '1px dashed var(--line-soft)',
     borderRadius: 10,
     padding: 12,
     marginBottom: 12,
   },
   uploadBox: {
     height: 64,
-    border: '1px solid #E4E3DD',
-    background: '#FAFBFF',
+    border: '1px solid var(--line-soft)',
+    background: 'var(--neu-bg)',
     borderRadius: 8,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#B0B4C0',
+    color: 'var(--text-placeholder)',
     fontSize: 12,
   },
   formInput: {
     height: 34,
-    background: '#FAFBFF',
-    borderColor: '#E4E3DD',
+    background: 'var(--neu-bg)',
+    borderColor: 'var(--line-soft)',
   },
   dashedInput: {
     height: 34,
-    background: '#FAFBFF',
-    borderColor: '#E4E3DD',
+    background: 'var(--neu-bg)',
+    borderColor: 'var(--line-soft)',
     borderStyle: 'dashed',
   },
 
   helpText: {
-    fontSize: 11,
-    color: '#6B7280',
+    fontSize: 12,
+    color: 'var(--text-2)',
     marginTop: 4,
   },
 };
@@ -149,10 +164,15 @@ interface SignageFormProps {
 const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [form] = Form.useForm();
   // [新增 2026-09-05] 监听有效期类型：临时标识才显示/必填有效期限
   const validityType = Form.useWatch('validity_type', form);
+  // [新增 2026-09-17] 监听标识分类：用于「从标准库选择」时限定只能选同分类的标准设计文件
+  const selectedCategory = Form.useWatch<string>('category', form);
   const [loading, setLoading] = useState(false);
+  // [新增 2026-09-17] 删除标识的提交中状态（入口由标识列表移入本页）
+  const [deleting, setDeleting] = useState(false);
   const isEdit = !!id;
   const { message: messageApi } = App.useApp();
   
@@ -179,6 +199,32 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
   // [修复 2026-09-04] 本地文件存储，用于新建标识时暂存上传的文件
   const [localDesignFile, setLocalDesignFile] = useState<File | null>(null);
   const [localInstallationFile, setLocalInstallationFile] = useState<File | null>(null);
+  // [新增 2026-09-17] 文件库引用：从标准库选择的设计文件ID（引用共享，路径同步到 designPhotoUrl）
+  const [designFileId, setDesignFileId] = useState<number | undefined>(undefined);
+  /**
+   * [新增 2026-09-17] 设计文件的展示名。
+   * 来源优先级：文件库中的使用名（引用标准设计文件）> 本地待上传文件名 > 路径文件名。
+   * 目的：引用标准设计文件时展示「文件管理」里为该文件设置的使用名，
+   * 而不是带时间戳随机串的原始落盘名。
+   */
+  const [designFileName, setDesignFileName] = useState<string | undefined>(undefined);
+  /**
+   * [新增 2026-09-17] 已引用标准设计文件所属的分类名。
+   * 用于在标识分类被改动后提示「引用与新分类不一致，保存会被拒绝」，
+   * 避免用户提交时才遇到后端 400 而不知原因。
+   */
+  const [designFileCategoryName, setDesignFileCategoryName] = useState<string | undefined>(undefined);
+  const [standardPickerOpen, setStandardPickerOpen] = useState(false);
+
+  // [新增 2026-09-17] 分类变更后，若已引用的标准文件不属于新分类，提前提示（后端仍会兜底拦截）
+  useEffect(() => {
+    if (!designFileName || !designFileCategoryName || !selectedCategory) return;
+    if (designFileCategoryName === selectedCategory) return;
+    messageApi.warning(
+      `标识分类已改为「${selectedCategory}」，而当前引用的标准设计文件属于「${designFileCategoryName}」；`
+      + '保存会被拒绝，请重新选择同分类文件或解除引用。',
+    );
+  }, [selectedCategory, designFileName, designFileCategoryName, messageApi]);
 
   // 标识分类和供应商状态
   const [categories, setCategories] = useState<SignageCategory[]>([]);
@@ -277,8 +323,13 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
           }
           
           // 加载设计文件和现场照片URL
-          setDesignPhotoUrl(data.design_photo);
-          setInstallationPhotoUrl(data.installation_photo);
+          // [调整 2026-09-17] 后端字段允许 null（未关联），state 用 undefined 表达"无"
+          setDesignPhotoUrl(data.design_photo ?? undefined);
+          setInstallationPhotoUrl(data.installation_photo ?? undefined);
+          // [新增 2026-09-17] 回填文件库引用（从标准库选择/上传登记的设计文件）
+          setDesignFileId(data.design_file_id ?? undefined);
+          // [新增 2026-09-17] 回填设计文件使用名（引用文件库时为使用名，否则为空走路径兜底）
+          setDesignFileName(data.design_file_name ?? undefined);
           
           // 设置院区/楼栋/楼层选中值
           if (data.campus) {
@@ -296,10 +347,13 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                     campusApi.getFloors(foundBuilding.id).then(r2 => {
                       setFloors(r2.items);
                       if (data.floor) {
-                        const foundFloor = r2.items.find(f => {
-                          const newFormat = f.floor_name ? `${f.floor_number}F-${f.floor_name}` : `${f.floor_number}F`;
-                          return newFormat === data.floor || f.floor_name === data.floor || f.floor_number?.toString() === data.floor;
-                        });
+                        // [调整 2026-09-17] 统一用 floorLabel 匹配（如 F3-门诊层），
+                        // 并兼容仅存楼层名称 / 仅存楼层编号的历史数据
+                        const foundFloor = r2.items.find(f =>
+                          floorLabel(f) === data.floor
+                          || f.floor_name === data.floor
+                          || f.floor_number === data.floor,
+                        );
                         if (foundFloor) {
                           setSelectedFloorId(foundFloor.id);
                         }
@@ -340,8 +394,17 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
         area: selectedZoneType === '楼层导视/宣传' && Array.isArray(values.area)
           ? (values.area as string[]).join(',')
           : '',
-        design_photo: designPhotoUrl,
-        installation_photo: installationPhotoUrl,
+        // [修复 2026-09-17] 显式传 null 而非 undefined：
+        // undefined 会被 JSON.stringify 省略，后端 update 用 exclude_unset 便不会更新该字段，
+        // 导致「删除设计文件 / 现场照片」保存后旧路径残留 —— 详情页仍显示已解除的关联。
+        // 口径与下方 design_file_id、area 保持一致：清空必须提交 null（或空串）。
+        design_photo: designPhotoUrl ?? null,
+        installation_photo: installationPhotoUrl ?? null,
+        // [新增 2026-09-17] 文件库引用：从标准库选择或上传登记后回填，
+        // 引用统计与删除保护（共享文件不可删）依赖该字段
+        // [调整 2026-09-17] 显式传 null：解除引用（改用本地新文件）时需要真正落库，
+        // 若传 undefined 会被 JSON 序列化省略、后端 exclude_unset 会保留旧引用
+        design_file_id: designFileId ?? null,
       };
 
       let newSignageId: number;
@@ -404,6 +467,21 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
     }
   };
 
+  // [新增 2026-09-17] 删除标识：入口由标识列表移至编辑页，需 signage.delete 权限。
+  // 成功后退回标识列表；失败则保留当前页面并恢复按钮，便于重试。
+  const handleDelete = async () => {
+    if (!id) return;
+    setDeleting(true);
+    try {
+      await deleteSignage(Number(id));
+      messageApi.success('删除成功');
+      navigate('/signages');
+    } catch {
+      messageApi.error('删除失败');
+      setDeleting(false);
+    }
+  };
+
   // [修复 2026-09-04] 上传设计文件（支持新建模式下保存到本地）
   const handleDesignUpload: UploadProps['customRequest'] = async (options) => {
     const file = options.file as File;
@@ -423,6 +501,10 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
     try {
       const result = await uploadSignagePhoto(Number(id), file, 'design');
       setDesignPhotoUrl(result.file_path);
+      // [调整 2026-09-17] 改为上传本地新文件后，不再指向原文件库记录：
+      // 清空引用 ID 并展示本地文件名，避免出现「路径是新文件、名称却是旧引用名」的不一致。
+      setDesignFileId(undefined);
+      setDesignFileName(file.name);
       messageApi.success('设计文件上传成功');
       options.onSuccess?.(result);
     } catch (error) {
@@ -474,10 +556,13 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
           <LeftOutlined /> 返回标识列表
         </div>
         <div style={{ flex: '1 1 40px', minWidth: 0 }}></div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: '#6B7280' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-2)' }}>
           状态
           <span style={styles.statusBadge}>
-            {STATUS_OPTIONS.find(s => s.value === currentStatus)?.label || '正常'}
+            {/* [修正 2026-09-21 / Q-8] 改用统一的 getSignageStatusLabel：
+                原写法 `|| '正常'` 会把未知状态悄悄显示成「正常」，掩盖数据异常；
+                现在取不到时回显原值，异常可见。 */}
+            {getSignageStatusLabel(currentStatus)}
           </span>
 
         </div>
@@ -485,14 +570,28 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
         {recordHistory && (
           <span style={{
             fontSize: 12,
-            color: '#B45309',
-            background: '#FEF3C7',
-            border: '1px solid #FDE68A',
+            color: 'var(--warn)',
+            background: 'var(--warn-soft)',
+            border: '1px solid var(--warn)',
             borderRadius: 6,
             padding: '4px 10px',
           }}>
             版本更新模式：保存后本次修改将记录到历史版本
           </span>
+        )}
+        {/* [新增 2026-09-17] 删除标识：入口由标识列表移入编辑页。
+            仅编辑既有标识时提供，需 signage.delete 权限；版本更新模式不提供删除。 */}
+        {isEdit && !recordHistory && hasPermission(user, PERM_SIGNAGE_DELETE) && (
+          <Popconfirm
+            title="确认删除该标识？"
+            description="删除后不可恢复，该标识的照片、平面点位等关联数据会一并清理。"
+            okText="确认删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true, loading: deleting }}
+            onConfirm={handleDelete}
+          >
+            <Button danger icon={<DeleteOutlined />} loading={deleting}>删除标识</Button>
+          </Popconfirm>
         )}
         <Button
           type="primary"
@@ -577,7 +676,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                 })]}
               >
                 <DatePicker
-                  style={{ width: '100%', height: 34, background: '#F4F6FB', borderStyle: 'dashed' }}
+                  style={{ width: '100%', height: 34, background: 'var(--neu-bg)', borderStyle: 'dashed' }}
                   placeholder={validityType === 'temporary' ? '请选择有效期限' : '长期标识无需选择'}
                   disabled={validityType !== 'temporary'}
                 />
@@ -723,10 +822,11 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                   value={selectedFloorId}
                   onChange={(value) => {
                     setSelectedFloorId(value);
-                    const f = floors.find(f => f.id === value);
-                    const floorLabel = f ? (f.floor_name ? `${f.floor_number}F-${f.floor_name}` : `${f.floor_number}F`) : undefined;
+                    const selected = floors.find(item => item.id === value);
                     // [调整 2026-09-12] 楼层变更后区域归属随之变化，清空原区域选择（区域列表由 useEffect 重新加载）
-                    form.setFieldsValue({ floor: floorLabel, area: [] });
+                    // [调整 2026-09-17] 楼层文本统一走 floorLabel（F3-门诊层）；
+                    // 原局部变量名 floorLabel 与工具函数重名，已改为直接调用工具函数
+                    form.setFieldsValue({ floor: selected ? floorLabel(selected) : undefined, area: [] });
                   }}
                   allowClear
                   disabled={!selectedBuildingId}
@@ -734,8 +834,9 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                   optionFilterProp="label"
                 >
                   {floors.map(f => (
-                    <Option key={f.id} value={f.id} label={f.floor_name ? `${f.floor_number}F-${f.floor_name}` : `${f.floor_number}F`}>
-                      {f.floor_number}F{f.floor_name ? `-${f.floor_name}` : ''}
+                    // [调整 2026-09-17] 楼层选项统一展示 floorLabel（如 F3-门诊层）
+                    <Option key={f.id} value={f.id} label={floorLabel(f)}>
+                      {floorLabel(f)}
                     </Option>
                   ))}
                 </Select>
@@ -780,7 +881,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
               <TextArea 
                 rows={2} 
                 placeholder="如：门诊前立柱旁" 
-                style={{ background: '#FAFBFF', borderColor: '#E4E3DD' }} 
+                style={{ background: 'var(--neu-bg)', borderColor: 'var(--line-soft)' }} 
               />
             </Form.Item>
             <div style={styles.helpText}>示例：门诊前立柱旁</div>
@@ -799,7 +900,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
               <Form.Item name="display_text_cn" noStyle rules={[{ required: true, message: '请输入中文文本' }]}>
                 <Input 
                   placeholder="请输入中文展示文本" 
-                  style={{ height: 44, background: '#FAFBFF', borderColor: '#E4E3DD' }}
+                  style={{ height: 44, background: 'var(--neu-bg)', borderColor: 'var(--line-soft)' }}
                 />
               </Form.Item>
             </Col>
@@ -808,7 +909,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
               <Form.Item name="display_text_en" noStyle>
                 <Input 
                   placeholder="请输入英文展示文本" 
-                  style={{ height: 44, background: '#FAFBFF', borderColor: '#E4E3DD', borderStyle: 'dashed' }}
+                  style={{ height: 44, background: 'var(--neu-bg)', borderColor: 'var(--line-soft)', borderStyle: 'dashed' }}
                 />
               </Form.Item>
             </Col>
@@ -828,7 +929,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
               <div style={styles.formLabel}>安装日期 <span style={styles.requiredMark}>*</span></div>
               <Form.Item name="install_date" noStyle rules={[{ required: true, message: '请选择安装日期' }]}>
                 <DatePicker 
-                  style={{ width: '100%', height: 34, background: '#FAFBFF' }} 
+                  style={{ width: '100%', height: 34, background: 'var(--neu-bg)' }} 
                   placeholder="选择安装日期"
                   onChange={(date) => {
                     if (date) {
@@ -843,7 +944,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
             <Col xs={24} sm={12} md={6}>
               <div style={styles.formLabel}>质保到期日 <span style={styles.optionalMark}>（自动计算）</span></div>
               <Form.Item name="warranty_expire" noStyle>
-                <DatePicker style={{ width: '100%', height: 34, background: '#F4F6FB', borderStyle: 'dashed' }} placeholder="选择质保到期日" />
+                <DatePicker style={{ width: '100%', height: 34, background: 'var(--neu-bg)', borderStyle: 'dashed' }} placeholder="选择质保到期日" />
               </Form.Item>
               <div style={styles.helpText}>默认安装日期 + 365天，可手动修改</div>
             </Col>
@@ -890,7 +991,27 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
             <Col xs={24} sm={12}>
               <div style={styles.uploadArea}>
                 {/* [修复 2026-09-07] 设计文件为非必填项，移除必填标记 */}
-                <div style={{ fontSize: 12, color: '#6B7280', marginBottom: 6 }}>设计文件</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+                  设计文件
+                  {/* [新增 2026-09-17] 从文件库选择标准设计文件（引用共享，不复制文件）。
+                      仅对拥有文件库查看权限（file.view）的账号展示该入口，
+                      避免无权限用户打开选择器后接口返回 403 */}
+                  {hasPermission(user, PERM_FILE_VIEW) && (
+                    <a
+                      style={{ marginLeft: 8, fontSize: 12 }}
+                      onClick={() => {
+                        // [新增 2026-09-17] 同分类约束：未选分类时无法判定可选范围，先引导选择
+                        if (!selectedCategory) {
+                          messageApi.warning('请先选择标识分类，再选择标准设计文件');
+                          return;
+                        }
+                        setStandardPickerOpen(true);
+                      }}
+                    >
+                      从标准库选择
+                    </a>
+                  )}
+                </div>
                 <div style={styles.uploadBox}>
                   <Upload
                     accept=".jpg,.jpeg,.png,.webp,.ai,.pdf"
@@ -905,31 +1026,38 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                 </div>
                 {designPhotoUrl && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                    <span style={{ fontSize: 11, background: '#EEF2FC', color: '#3B6FD4', borderRadius: 4, padding: '2px 6px' }}>
+                    <span style={{ fontSize: 12, background: 'var(--accent-soft)', color: 'var(--accent)', borderRadius: 4, padding: '2px 6px' }}>
                       {designPhotoUrl.startsWith('blob:') && localDesignFile
                         ? localDesignFile.name.split('.').pop()?.toUpperCase()
                         : getFileExtension(designPhotoUrl).toUpperCase()}
                     </span>
                     <div>
                       <span style={{ fontSize: 12 }}>
-                        {designPhotoUrl.startsWith('blob:') && localDesignFile
-                          ? localDesignFile.name
-                          : designPhotoUrl.split('/').pop()}
+                        {/* [调整 2026-09-17] 名称优先级：文件库使用名 > 本地待上传文件名 > 路径文件名。
+                            引用标准设计文件时展示「文件管理」中设置的使用名，不再显示落盘随机名 */}
+                        {designFileName
+                          || (designPhotoUrl.startsWith('blob:') && localDesignFile
+                            ? localDesignFile.name
+                            : designPhotoUrl.split('/').pop())}
                       </span>
                       {!isEdit && localDesignFile && (
-                        <div style={{ fontSize: 11, color: '#6B7280', marginTop: 2 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
                           创建标识后自动上传
                         </div>
                       )}
                     </div>
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: '#3B6FD4', cursor: 'pointer' }}>
+                    <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
                       预览
                     </span>
                     <span 
-                      style={{ fontSize: 11, color: '#EA6668', cursor: 'pointer' }}
+                      style={{ fontSize: 12, color: 'var(--danger)', cursor: 'pointer' }}
                       onClick={() => {
                         setDesignPhotoUrl(undefined);
                         setLocalDesignFile(null);
+                        // [新增 2026-09-17] 解除文件库引用（随之释放共享引用保护）
+                        setDesignFileId(undefined);
+                        setDesignFileName(undefined);
+                        setDesignFileCategoryName(undefined);
                       }}
                     >
                       删除
@@ -940,7 +1068,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
             </Col>
             <Col xs={24} sm={12}>
               <div style={styles.uploadArea}>
-                <div style={{ fontSize: 12, color: '#6B7280', marginBottom: 6 }}>现场照片</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>现场照片</div>
                 <div style={styles.uploadBox}>
                   <Upload
                     accept="image/*"
@@ -966,7 +1094,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                       />
                       <div>
                         <span 
-                          style={{ fontSize: 11, color: '#EA6668', cursor: 'pointer' }}
+                          style={{ fontSize: 12, color: 'var(--danger)', cursor: 'pointer' }}
                           onClick={() => {
                             setInstallationPhotoUrl(undefined);
                             setLocalInstallationFile(null);
@@ -975,7 +1103,7 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
                           删除
                         </span>
                         {!isEdit && localInstallationFile && (
-                          <div style={{ fontSize: 11, color: '#6B7280', marginTop: 2 }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
                             创建标识后自动上传
                           </div>
                         )}
@@ -997,18 +1125,32 @@ const SignageForm: React.FC<SignageFormProps> = ({ recordHistory = false }) => {
 
         </div>
       </Form>
+
+      {/* [新增 2026-09-17] 标准设计文件选择器：选中即引用该文件（路径 + 文件库引用ID） */}
+      <StandardFilePicker
+        open={standardPickerOpen}
+        onClose={() => setStandardPickerOpen(false)}
+        // [新增 2026-09-17] 传入当前标识分类：只允许选择同分类的标准设计文件（限制跨类别引用）
+        categoryName={selectedCategory || undefined}
+        onSelect={(file: StandardFileOption) => {
+          setDesignPhotoUrl(file.stored_path);
+          setDesignFileId(file.id);
+          // [新增 2026-09-17] 使用文件库中的「使用名」作为展示名（需求：引用时用文件管理里的使用名）
+          setDesignFileName(file.name);
+          // [新增 2026-09-17] 记录该文件的分类，供分类变更时提前提示引用不一致
+          setDesignFileCategoryName(file.category_name || undefined);
+          setLocalDesignFile(null);
+          messageApi.success(`已引用标准设计文件「${file.name}」，保存后生效`);
+        }}
+      />
     </div>
   );
 };
 
-// [修复 2026-09-04] 根据参考页面定义的常量
-const STATUS_OPTIONS = [
-  { value: 'normal', label: '正常' },
-  { value: 'damaged', label: '轻微破损' },
-  // [修复 2026-09-09] 文案统一为「严重损坏」，与其他页面口径一致
-  { value: 'severely_damaged', label: '严重损坏' },
-  { value: 'removed', label: '已拆除' },
-];
+// [重构 2026-09-21 / 代码质量审计 Q-8] 原先此处另有一份 STATUS_OPTIONS 副本，
+// ⚠️ 它**缺少 repair_in_progress（维修处理中）** —— 编辑一个正处于维修中的标识时，
+// 状态下拉框无法回显该状态（会显示为空或错值），且用户一旦保存就会把状态改错。
+// 现统一引用权威源 constants/signageStatus.ts 的 SIGNAGE_STATUS_SELECT_OPTIONS。
 
 const CATEGORY_TYPE_OPTIONS = [
   { value: '标识标牌', label: '标识标牌' },

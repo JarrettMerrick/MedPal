@@ -183,12 +183,12 @@ const RoleList: React.FC = () => {
           <Card size="small" title="数据范围配置" style={{ marginBottom: 16 }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
-                <Text style={{ fontSize: 12, color: '#666' }}>科室数据范围</Text>
+                <Text style={{ fontSize: 12, color: 'var(--text-2)' }}>科室数据范围</Text>
                 <Select value={form.department_scope} onChange={v => setForm({ ...form, department_scope: v })} disabled={viewOnly} style={{ width: '100%', marginTop: 4 }}
                   options={[{ value: 'own', label: '仅本科室' }, { value: 'managed', label: '管辖科室' }, { value: 'all', label: '所有科室' }]} />
               </div>
               <div>
-                <Text style={{ fontSize: 12, color: '#666' }}>工种数据范围</Text>
+                <Text style={{ fontSize: 12, color: 'var(--text-2)' }}>工种数据范围</Text>
                 <Checkbox.Group options={workTypeOptions.filter(o => o.value !== 'all')} value={selectedWorkTypes} disabled={viewOnly}
                   onChange={(vals) => setForm({ ...form, work_type_scope: (vals as string[]).length === 0 ? 'all' : (vals as string[]).join(',') })} style={{ marginTop: 4 }} />
                 <Checkbox checked={form.work_type_scope === 'all'} onChange={e => setForm({ ...form, work_type_scope: e.target.checked ? 'all' : '' })} disabled={viewOnly}>所有工种</Checkbox>
@@ -236,7 +236,7 @@ const RoleList: React.FC = () => {
               )}
             </div>
           </Card>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, paddingTop: 16, borderTop: '1px solid var(--line-softer)' }}>
             <Button onClick={() => setShowForm(false)}>{viewOnly ? '关闭' : '取消'}</Button>
             {!viewOnly && <Button type="primary" htmlType="submit">{editRole ? '保存修改' : '创建角色'}</Button>}
           </div>

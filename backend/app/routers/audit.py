@@ -27,8 +27,12 @@
 from datetime import timedelta
 import io
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
+
+# [新增 2026-09-19] 导出/清理系统日志属敏感操作，需按日志规范留痕
+from app.services.audit_service import record_audit
+from app.utils import get_client_ip
 
 from app.database import get_db
 from app.dependencies import (
@@ -51,6 +55,7 @@ from app.services.audit_service import get_modification_history
 # [统一时间口径] API 时间字段用 to_iso_utc；导出产物用 to_beijing_str；
 # 日期筛选边界用 beijing_date_start_utc
 from app.utils import utc_now, to_iso_utc, to_beijing_str, beijing_date_start_utc
+from app.services.excel_safety import append_safe
 
 router = APIRouter(prefix="/api/audit", tags=["系统日志"])
 
@@ -179,6 +184,7 @@ def list_system_logs(
 
 @router.get("/system-logs/export")
 def export_system_logs(
+    request: Request,
     category: str = Query(None),
     level: str = Query(None),
     keyword: str = Query(None),
@@ -210,12 +216,28 @@ def export_system_logs(
 
     items = query.order_by(SystemLog.timestamp.desc()).limit(10000).all()
 
+    # [新增 2026-09-19] 导出系统日志是敏感操作（产物含操作人、IP、业务详情，
+    # 单次可达 1 万条），按「核心业务动作需留痕」的规范补记审计。
+    # 只记录筛选条件与条数，不复制日志内容本体。
+    client_ip = get_client_ip(request)
+    record_audit(
+        db, "system_log_export", current_user.employee_id,
+        detail=(
+            f"ip={client_ip}, rows={len(items)}, "
+            f"category={category or '*'}, level={level or '*'}, "
+            f"keyword={keyword or '-'}, "
+            f"range={start_date or '-'}~{end_date or '-'}"
+        ),
+        target="system_logs", ip_address=client_ip,
+    )
+    db.commit()
+
     wb = Workbook()
     ws = wb.active
     ws.title = "系统日志"
-    ws.append(["时间", "级别", "类别", "操作人", "内容", "IP地址", "详情"])
+    append_safe(ws, ["时间", "级别", "类别", "操作人", "内容", "IP地址", "详情"])
     for item in items:
-        ws.append([
+        append_safe(ws, [
             # [统一时间口径] 导出产物直接给人看，显式转北京时间
             to_beijing_str(item.timestamp),
             LEVEL_LABELS.get(item.level, item.level),
@@ -240,6 +262,7 @@ def export_system_logs(
 
 @router.delete("/system-logs/cleanup")
 def cleanup_system_logs(
+    request: Request,
     days: int = Query(90, ge=1, le=365, description="保留最近N天的日志"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -253,4 +276,16 @@ def cleanup_system_logs(
     cutoff = utc_now() - timedelta(days=days)
     deleted = db.query(SystemLog).filter(SystemLog.timestamp < cutoff).delete()
     db.commit()
+
+    # [新增 2026-09-19] 清理系统日志等于**删除审计痕迹**，是权限体系中最敏感的
+    # 动作之一，必须留痕。此处记录「谁、从哪个 IP、保留了多久、删了多少条」。
+    # 新增的审计记录时间戳为当前时刻，必然晚于 cutoff，故不会被本次清理波及。
+    client_ip = get_client_ip(request)
+    record_audit(
+        db, "system_log_cleanup", current_user.employee_id,
+        detail=f"ip={client_ip}, keep_days={days}, deleted={deleted}",
+        target="system_logs", ip_address=client_ip,
+    )
+    db.commit()
+
     return {"message": f"已清理 {deleted} 条过期日志", "deleted": deleted}
