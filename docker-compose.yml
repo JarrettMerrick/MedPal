@@ -1,0 +1,37 @@
+# ============================================================================
+# MedPal 单容器部署编排
+# ----------------------------------------------------------------------------
+# 使用步骤：
+#   1) cp .env.example .env    # 并填写 SECRET_KEY（必填，否则容器拒绝启动）
+#   2) docker compose up -d --build
+#   3) 访问 http://服务器IP:5000
+#
+# 镜像内前端静态资源由后端同源托管，因此只需暴露 5000 一个端口，无需额外 Nginx。
+# ============================================================================
+services:
+  medpal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: medpal:1.2.6
+    container_name: medpal
+    restart: unless-stopped
+
+    # 环境变量统一由 .env 提供（参照 .env.example）；如需临时覆盖，
+    # 在下面的 environment 中追加即可（其优先级高于 env_file）
+    env_file:
+      - .env
+    environment:
+      # 数据根目录固定在容器内 /app/data，与下方卷挂载点保持一致
+      DATA_ROOT: /app/data
+
+    ports:
+      # 左侧为宿主机端口，被占用时可改为 "8080:5000"
+      - "5000:5000"
+
+    volumes:
+      # 数据库 / 上传附件 / 备份 / 日志全部落在此目录，重建容器不丢数据。
+      # Linux 服务器也可改为绝对路径，如 /opt/medpal/data:/app/data
+      # [Windows/macOS] 通过 Docker Desktop 挂载共享目录时 SQLite 的 WAL 模式会报
+      #   disk I/O error，请在 .env 中设置 SQLITE_WAL_ENABLED=false 后重启容器
+      - ./data:/app/data

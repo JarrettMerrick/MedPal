@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+// Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 // Licensed under the MIT License. See LICENSE file for details.
 
 /**
@@ -71,6 +71,21 @@ const SECURITY_NOTE = '升级系统安全，修复 bug';
  *   - 同类改动尽量合并为一条（原 v1.2.0 的十条已合并为八条）。
  */
 const VERSION_HISTORY: ChangelogEntry[] = [
+  {
+    version: 'v1.2.6',
+    date: '2026-09-22',
+    codename: '数据恢复与下载修复',
+    changes: [
+      // 本次围绕「恢复旧版本备份后系统不可用」这一实际故障展开，
+      // 并把全项目重复的文件下载逻辑收敛为一处。
+      '修复：恢复旧备份后系统不可用，恢复后自动补齐结构',
+      '修复：删除员工失败、孤儿图片清理失效等问题',
+      '优化：全站文件下载统一，修复个别浏览器点击无反应',
+      '修复：导出失败时会下载到打不开的假文件',
+      '新增：标识附件导出包支持手动删除',
+      '优化：数据库异常时给出可直接照做的提示',
+    ],
+  },
   {
     version: 'v1.2.5',
     date: '2026-09-19',

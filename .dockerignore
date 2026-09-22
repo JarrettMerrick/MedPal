@@ -1,57 +1,53 @@
-# Git
+# ============================================================================
+# Docker 构建上下文排除清单
+# 目的：① 缩小构建上下文、加快构建；② 禁止密钥与运行数据进入镜像。
+# 注意：Dockerfile 只 COPY 了 frontend/、backend/、requirements.txt，
+#       本清单主要用于排除其中的无关文件并保护敏感内容。
+# ============================================================================
+
+# ---------- 版本控制 ----------
 .git
 .gitignore
+.gitattributes
 
-# 依赖目录（极大，构建镜像时会重新安装，必须排除）
-node_modules
-frontend/node_modules
-backend/__pycache__
-backend/**/__pycache__
-**/__pycache__
-*.pyc
-
-# 本地构建产物与缓存
-frontend/dist
-frontend/build
-frontend/.vite
-.vite
-
-# 开发/临时文件
+# ---------- 运行数据（数据库 / 上传 / 备份 / 日志），绝不进镜像 ----------
+data/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 *.log
-*.tmp
-*.temp
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
+**/_chunks/
+**/temp_exports/
 
-# IDE
-.vscode
-.idea
-
-# 测试
-tests
-__tests__
-*.test.*
-*.spec.*
-
-# 文档（构建无需）
-docs
-*.md
-LICENSE
-
-# 本地环境文件（含密钥，禁止进入镜像）
+# ---------- 环境文件（含 SECRET_KEY 等密钥），运行时经 env_file 注入 ----------
 .env
 .env.*
-.env.local
-.env.*.local
+!.env.example
 
-# 证书与密钥（由宿主机挂载提供）
-*.pem
-*.key
-deploy_aliyun
+# ---------- 依赖目录与 Python 缓存（镜像内重新安装） ----------
+node_modules/
+frontend/node_modules/
+**/__pycache__/
+**/*.py[cod]
 
-# 其他部署形态配置（仅保留 aliyun-docker-prod 目录内容）
-deploy/docker-local
-deploy/k8s-prod
+# ---------- 本地构建产物与缓存（镜像内由前端构建阶段生成） ----------
+frontend/dist/
+frontend/build/
+frontend/.vite/
+**/*.tsbuildinfo
+
+# ---------- 编辑器与系统文件 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ---------- 文档与协议（构建无需，减小上下文） ----------
+*.md
+LICENSE
+docs/

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+# Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
 import os
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # [改进] 使用 __file__ 计算绝对路径，确保不依赖当前工作目录(CWD)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# backend 目录（源码布局中为 <根>/backend；Docker 中代码被压平到 /app）
+# backend 目录（源码布局与镜像布局一致：源码 <根>/backend，镜像 /app/backend）
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 # [数据分离存储] 所有数据文件（数据库 / 上传附件 / 打包图片 / 备份 / 日志）
@@ -23,8 +23,9 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 #
 # 布局自适应：
 #   - 源码/本地开发布局：backend/ 与 data/ 同级 → DATA_ROOT = PROJECT_ROOT/data
-#   - Docker 容器布局：backend 被压平到 /app，data 由卷挂载在 /app/data
-#       → DATA_ROOT = BACKEND_DIR/data（即 /app/data）
+#   - 镜像布局（Dockerfile）：代码位于 /app/backend（PROJECT_ROOT = /app），
+#       数据由卷挂载在 /app/data → 同上规则命中 PROJECT_ROOT/data
+#   - 兜底：若 backend 被压平到 /app（PROJECT_ROOT = 根目录）→ DATA_ROOT = BACKEND_DIR/data
 # 亦支持通过环境变量 DATA_ROOT 显式覆盖（docker-compose 已设为 /app/data）。
 _ENV_DATA_ROOT = os.getenv("DATA_ROOT")
 if _ENV_DATA_ROOT:
@@ -42,8 +43,9 @@ class Settings(BaseSettings):
     # 与 .env.example / README 中 APP_NAME 的默认值保持一致
     app_name: str = "MedPal信息管理系统"
 
-    # 数据库 - 默认指向数据根目录下的 data/medical.db（与 backend 完全隔离）
-    # Docker 容器中由 docker-compose 的 DATABASE_URL 环境变量覆盖
+    # 数据库 - 默认指向数据根目录下的 medical.db（与 backend 完全隔离）
+    # 镜像中由 DATA_ROOT（/app/data）推导为 /app/data/medical.db；
+    # 如需指向其它位置，可用环境变量 DATABASE_URL 覆盖
     database_url: str = f"sqlite:///{(DATA_ROOT / 'medical.db').as_posix()}"
 
     # [改进/部署] SQLite WAL 模式开关（默认开启）

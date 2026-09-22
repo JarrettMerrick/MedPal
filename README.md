@@ -1,11 +1,12 @@
-# MedPal 医院宣传信息管理系统 V1.2.5
+# MedPal 医院宣传信息管理系统 V1.2.6
 
-- **仓库地址**：https://github.com/zjmnt1992/MedPal
-- **演示地址**：https://www.medpal.ink/ 演示账号及密码请邮件至 zjm20@vip.qq.com 获取
+- **仓库地址**：https://github.com/JarrettMerrick/MedPal
 
 > ⚠️ **容量建议**：本系统结构轻量且简单，适合服务器存储资源紧张的单位使用，总用户数不建议超过 3000，并发不建议超过 50。
 
 基于 Python FastAPI + React + SQLite 的轻量化医护信息管理系统：内置完整权限体系（57 个权限点）、三级变更审核、标识台账与平面打点、设计文件库、单位级功能开关、通知中心与自动运维能力，开箱即用、无需复杂数据库迁移。
+
+> 🐳 **部署方式**：本系统以 **Docker 单容器** 方式交付（前端构建产物由后端同源托管），一条 `docker compose up -d --build` 即可完成安装与升级，服务器无需安装 Python、Node.js 或任何数据库。
 
 ---
 
@@ -32,6 +33,7 @@
 | 后端 | Python 3.11+ · FastAPI 0.115 · SQLAlchemy 2.0（自动建表补列，无迁移工具）· Uvicorn · APScheduler |
 | 前端 | React 18 · TypeScript 5.6 · Vite 5 · Ant Design 5 · TailwindCSS 3 · Recharts · wangEditor |
 | 数据库 | SQLite（默认 WAL 模式，可切换 DELETE 以适配 Windows 挂载卷） |
+| 交付方式 | Docker 单镜像（多阶段构建：Node 构建前端 → Python 运行后端，前端由后端同源托管） |
 | 核心能力 | JWT 双 Token 认证 · 文件分片上传 · Excel 导入导出 · 服务端二维码生成 · 富文本清洗 |
 
 ---
@@ -40,11 +42,14 @@
 
 ```text
 MedPal/
+├── Dockerfile                # 多阶段构建：前端构建 + 后端运行（单镜像）
+├── docker-compose.yml        # 单容器编排：端口 / 环境变量 / 数据卷
+├── .dockerignore             # 构建上下文排除清单（隔离密钥与运行数据）
 ├── README.md
 ├── LICENSE                   # MIT 开源协议全文
 ├── requirements.txt          # 后端依赖清单
 ├── .env.example              # 环境变量示例（复制为 .env 使用）
-├── data/                     # 数据根目录（与代码完全隔离，升级不丢数据）
+├── data/                     # 数据根目录（容器内为 /app/data，与代码完全隔离）
 │   ├── medical.db            #   SQLite 数据库
 │   ├── backups/              #   自动/手动备份与恢复回滚点
 │   ├── uploads/              #   上传附件（人员照片、工卡、标识图片等）
@@ -53,10 +58,9 @@ MedPal/
 │   └── temp_exports/         #   临时导出文件（自动清理）
 ├── backend/
 │   ├── run.py                # 启动入口（默认 0.0.0.0:5000）
-│   ├── seed_demo.py          # 测试数据生成脚本（仅开发/测试环境）
 │   └── app/
-│       ├── main.py           # 应用装配：中间件、路由注册、启动初始化与定时任务
-│       ├── config.py         # 配置与数据目录自适应（源码布局 / 容器布局）
+│       ├── main.py           # 应用装配：中间件、路由注册、前端托管、启动初始化与定时任务
+│       ├── config.py         # 配置与数据目录自适应（源码布局 / 镜像布局）
 │       ├── database.py       # 引擎、SQLite PRAGMA、会话管理
 │       ├── dependencies.py   # 认证、权限校验、数据范围依赖
 │       ├── routers/          # 31 个接口模块（人员/科室/标识/站内信/系统设置…）
@@ -65,7 +69,8 @@ MedPal/
 │       ├── schemas/          # 请求/响应模型
 │       └── utils/            # 时间、Token、文本清洗等工具
 └── frontend/
-    ├── vite.config.ts        # 开发代理（/api、/uploads、/public → 后端 5000）
+    ├── vite.config.ts        # 构建分包配置（开发态代理见文件内注释）
+    ├── dist/                 # 构建产物（镜像内由后端在 / 下托管，无需 Nginx）
     └── src/
         ├── App.tsx           # 路由与页面级权限守卫
         ├── components/       # 17 个通用组件（布局、消息铃铛、富文本、图片处理…）
@@ -77,60 +82,147 @@ MedPal/
 
 ---
 
-## 🚀 快速启动（本地开发）
+## 🐳 Docker 部署
 
-**环境要求**：Python 3.11+、Node.js 18+
+本系统以**单容器**交付：镜像内同时包含前端构建产物与后端服务，页面与接口同源提供，**只需暴露 5000 一个端口，无需额外部署 Nginx 或数据库**。
 
-### 1. 初始化配置
+### 1. 环境要求
+
+| 项目 | 要求 |
+| --- | --- |
+| Docker | Docker Engine 20.10+ / Docker Desktop（需包含 `docker compose` v2） |
+| 内存 | ≥ 1 GB（构建阶段建议 2 GB） |
+| 磁盘 | ≥ 3 GB（镜像 + 数据目录） |
+| 网络 | 首次构建需联网拉取基础镜像与 npm / pip 依赖 |
+
+> 服务器无需安装 Python、Node.js、Nginx 或数据库，SQLite 由容器内程序自动创建与维护。
+> 内网环境无法直连外网时，请按 `Dockerfile` 内注释切换 pip / npm 国内镜像源。
+
+### 2. 准备配置文件
 
 ```bash
-# 复制环境变量配置
+# 1) 生成环境变量文件（Windows PowerShell：Copy-Item .env.example .env）
 cp .env.example .env
 
-# 生成安全密钥（必须替换默认值，否则无法启动）
+# 2) 生成随机密钥，并填入 .env 的 SECRET_KEY（必填，未替换默认值时容器拒绝启动）
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-### 2. 启动后端
+`.env` 中部署阶段需要确认的项：
+
+| 变量 | 建议值 | 说明 |
+| --- | --- | --- |
+| `SECRET_KEY` | 随机字符串 | **必填**，JWT 签名密钥，未替换时应用拒绝启动 |
+| `ENVIRONMENT` | `production` | 生产环境运行 |
+| `SQLITE_WAL_ENABLED` | Linux 保持 `true`；Windows / macOS 挂载目录设 `false` | 详见「4. 数据卷」 |
+
+### 3. 构建并启动（推荐）
 
 ```bash
-pip install -r requirements.txt
-cd backend && python run.py
+docker compose up -d --build
 ```
 
-- 后端地址：http://localhost:5000
-- 接口文档：http://localhost:5000/docs
+- **访问地址**：http://服务器IP:5000
+- 首次启动会自动建表、初始化角色权限并创建超级管理员（约 10~30 秒，可执行 `docker compose logs -f` 观察进度）
+- **健康检查**：http://服务器IP:5000/api/health 返回 `{"status":"ok",...}` 即为正常
+- 停止并删除容器（数据保留）：`docker compose down`
 
-### 3. 启动前端
+### 4. 数据卷（务必挂载）
+
+容器内所有需要留存的数据统一写在 `/app/data`：
+
+```text
+/app/data/
+├── medical.db        # SQLite 数据库
+├── backups/          # 自动 / 手动备份
+├── uploads/          # 上传附件（人员照片、工卡、标识图片…）
+├── public/           # 公开资源（单位 Logo）
+├── logs/             # 运行日志与访问日志
+└── temp_exports/     # 临时导出文件
+```
+
+- `docker-compose.yml` 已将宿主机的 `./data` 挂载到容器 `/app/data`：**升级、重建容器都不会丢数据**；如需改为绝对路径，把该行改成 `/opt/medpal/data:/app/data` 即可；
+- 该目录请纳入服务器例行备份（或依赖系统自带的「每日自动备份」能力）；
+- **Windows / macOS 注意**：通过 Docker Desktop 挂载宿主机共享目录（NTFS / APFS）时，SQLite 的 WAL 模式会报 `disk I/O error`，请在 `.env` 中设置 `SQLITE_WAL_ENABLED=false` 后重启容器；Linux 服务器保持 `true`（并发性能更好）。
+
+### 5. 不使用 compose 时（原生 docker 命令）
 
 ```bash
-cd frontend && npm install && npm run dev
+# 构建镜像
+docker build -t medpal:1.2.6 .
+
+# 启动容器（PowerShell 中把 $(...) 换成手动填入第 2 步生成的密钥）
+docker run -d --name medpal \
+  --restart unless-stopped \
+  -p 5000:5000 \
+  -e SECRET_KEY="<第 2 步生成的随机密钥>" \
+  -e ENVIRONMENT=production \
+  -e DATA_ROOT=/app/data \
+  -v /opt/medpal/data:/app/data \
+  medpal:1.2.6
 ```
 
-- 前端地址：http://localhost:5173
-
-### 4.（可选）导入演示数据
+### 6. 升级版本
 
 ```bash
-cd backend
-python seed_demo.py --buildings 4 --staff 30 --signages 60
+git pull                      # 或解压新版本源码覆盖（保留 data/ 目录与 .env）
+docker compose up -d --build  # 重新构建镜像并替换容器
 ```
 
-脚本为幂等设计（只补齐差额，不删除不覆盖），生成的数据统一标记 `created_by/updated_by = seed_demo`，便于识别与清理。
+- 启动时会**自动补齐数据库表结构与新增权限点**，无需手动执行任何迁移脚本；
+- `data/` 与 `.env` 不参与镜像构建，重建容器后原样保留；
+- 如需回滚：切回旧版本代码重新构建即可（若数据库已被新版本升级过，请先用「系统设置 → 数据备份」恢复对应时期的备份）。
+
+### 7. 常用运维命令
+
+| 操作 | 命令 |
+| --- | --- |
+| 查看实时日志 | `docker compose logs -f --tail=200` |
+| 重启服务 | `docker compose restart` |
+| 停止并删除容器（数据保留） | `docker compose down` |
+| 进入容器排查 | `docker compose exec medpal bash` |
+| 查看数据目录占用 | `docker compose exec medpal du -sh /app/data/*` |
+| 修改对外端口 | 编辑 `docker-compose.yml` 中 `5000:5000` 左侧端口后执行 `docker compose up -d` |
+
+### 8. 反向代理与 HTTPS（可选）
+
+需要域名访问或启用 HTTPS 时，在**宿主机**上再挂一层 Nginx（本容器仍只暴露 5000）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name medpal.example.com;
+
+    # 需 ≥ 系统上传上限（默认 20MB；数据导入包、附件批量下载也走此限制）
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+> ⚠️ 请务必保留 `X-Real-IP` / `X-Forwarded-For` 两行：系统的登录限流与操作审计按客户端 IP 记录，缺失该头会把所有请求都记为代理 IP，导致限流误伤全体用户、审计日志无法溯源。
 
 ---
 
 ## ⚙️ 环境变量
 
+`.env`（复制自 `.env.example`）由 `docker-compose.yml` 通过 `env_file` 注入容器，不会打进镜像。
+
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `SECRET_KEY` | 无（**必填**） | JWT 签名密钥，仍为内置默认值时应用拒绝启动 |
-| `ENVIRONMENT` | `development` | `development`（日志更详细）/ `production` |
+| `ENVIRONMENT` | `development` | `development`（日志更详细）/ `production`（生产部署请设为该项） |
 | `APP_NAME` | MedPal信息管理系统 | 应用名称（可在「单位设置」中改系统名称） |
-| `DATA_ROOT` | 自动检测 | 数据根目录；源码布局取项目根 `data/`，容器布局取 `/app/data` |
+| `DATA_ROOT` | 自动检测 | 数据根目录；源码布局取项目根 `data/`，镜像内固定 `/app/data` |
 | `DATABASE_URL` | 空 | 留空则使用 `${DATA_ROOT}/medical.db` |
-| `SQLITE_WAL_ENABLED` | `true` | Linux 生产建议开启；Windows Docker 挂载 NTFS 卷需设为 `false` |
-| `CORS_ORIGINS` | `http://localhost:3000` | 允许的跨域来源，逗号分隔（本地开发需包含前端地址） |
+| `SQLITE_WAL_ENABLED` | `true` | Linux 生产建议开启；Windows/macOS 挂载目录需设为 `false` |
+| `CORS_ORIGINS` | `http://localhost:3000` | 允许的跨域来源，逗号分隔；单容器同源部署无需调整 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | 访问令牌有效期 |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | `60` | 刷新令牌有效期 |
 | `REMEMBER_ME_REFRESH_TOKEN_EXPIRE_DAYS` | `3` | 「记住我」刷新令牌有效期 |
@@ -185,7 +277,7 @@ python seed_demo.py --buildings 4 --staff 30 --signages 60
 
 ## 💾 数据与运维
 
-- **数据目录隔离**：数据库、上传附件、备份、日志、公开资源统一存放 `data/` 目录，与代码分离，升级/重建容器不丢数据
+- **数据目录隔离**：数据库、上传附件、备份、日志、公开资源统一存放 `/app/data`（宿主机的 `data/` 目录），与代码分离，重建容器不丢数据
 - **自动备份**：每日北京时间 00:15 自动备份，默认保留最近 7 天（`BACKUP_MAX_COUNT` 可调），支持手动备份与恢复；每次恢复前自动生成 `prerestore` 回滚点（保留 7 天）
 - **自动清理**：孤儿上传分片（24 小时）、临时导出包（1 天）、标识附件导出包（24 小时）、已读站内信（30 天）、未读站内信（90 天）、过期 Token 黑名单与限流记录（每小时）、运行日志（保留当天 + 6 天历史）
 - **数据库维护**：每月 1 日自动执行 VACUUM 回收空间；WAL 超过 50MB 自动 checkpoint
@@ -200,6 +292,7 @@ python seed_demo.py --buildings 4 --staff 30 --signages 60
 - 登录 / 刷新 / 注册三档 IP 限流（登录 10 次/分钟、注册 5 次/小时，超限自动封禁），限流记录持久化到数据库，多进程共享、重启不失效
 - 文件上传类型与大小校验、分片上传会话管理、备份文件名白名单
 - 全链路操作审计日志（含导入导出、备份恢复、权限变更等敏感操作）
+- 密钥不入镜像：`.env` 与 `data/` 均已在 `.dockerignore` 中排除，仅通过环境变量与数据卷在运行时注入
 
 ---
 
@@ -207,8 +300,14 @@ python seed_demo.py --buildings 4 --staff 30 --signages 60
 
 | 问题 | 说明 |
 | --- | --- |
+| 容器启动后立即退出 | 多为 `SECRET_KEY` 未设置或仍为示例值（应用会拒绝启动），执行 `docker compose logs --tail=50` 查看具体原因 |
+| 页面打不开 / 502 | 先确认容器状态 `docker compose ps`，再访问 `/api/health` 判断是服务未起还是网络/代理问题 |
+| 端口被占用 | 修改 `docker-compose.yml` 中 `5000:5000` 的左侧端口后 `docker compose up -d` |
+| 数据会不会随容器删除而丢失 | 不会。数据库、上传、备份、日志都在挂载的 `data/` 目录中，仅需避免误删该目录 |
+| Windows 下报 disk I/O error | 共享目录挂载不支持 WAL，在 `.env` 中设置 `SQLITE_WAL_ENABLED=false` 并重启容器 |
 | 忘记密码 | 超级管理员在用户管理后台重置 |
-| 系统升级 | 直接重启服务，程序自动更新数据库结构并补齐权限点，无需手动迁移 |
+| 系统升级 | `docker compose up -d --build`，启动时自动更新数据库结构并补齐权限点，无需手动迁移 |
+| 内网构建很慢 / 拉取依赖失败 | 按 `Dockerfile` 注释切换 pip、npm 国内镜像源后重新构建 |
 | 待审提示 | 正常追认审核机制，修改即时生效，超时自动升级审核人 |
 | 磁盘占用 | 系统自动清理冗余文件，备份、日志、站内信均有过期清理策略 |
 | 菜单看不见 | 先看「功能开关」是否开启（单位级），再看「角色管理」是否授予对应权限（角色级） |

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+# Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 # Licensed under the MIT License. See LICENSE file for details.
 
 import logging
@@ -122,6 +122,24 @@ def classify_operation(path: str) -> str:
     return "其他"
 
 
+# ── 前端静态资源判定（用于跳过访问日志） ─────────────────────────────
+# [新增 2026-09-22 / Docker] 单容器部署后，前端 JS/CSS/字体/图片与后端同源，
+# 一次页面刷新就会产生数十条资源请求。这些请求没有业务上下文，全部写入 access
+# 日志只会淹没真正的业务访问轨迹（人员查看、数据导出等），故不记录。
+# 必须排除 /api、/uploads、/public：接口调用与业务文件访问（含 PHI 照片）是审计
+# 对象，需逐条留痕，不能因为路径带文件后缀就被当成静态资源跳过。
+_STATIC_ASSET_RE = re.compile(
+    r"\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot)$", re.IGNORECASE
+)
+
+
+def is_static_asset_path(path: str) -> bool:
+    """判断是否为前端构建产物请求（无业务含义，不记访问日志）。"""
+    if path.startswith(("/api/", "/uploads/", "/public/")):
+        return False
+    return path.startswith("/assets/") or _STATIC_ASSET_RE.search(path) is not None
+
+
 # ── HTTP 请求日志中间件 ──────────────────────────────────────────────
 class RequestLogMiddleware:
     """
@@ -137,6 +155,11 @@ class RequestLogMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # [新增 2026-09-22 / Docker] 前端静态资源直接放行、不记录访问日志（原因见上方）
+        if is_static_asset_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
 
@@ -252,7 +275,7 @@ async def lifespan(_app: FastAPI):
         shutdown()
 
 
-app = FastAPI(title=settings.app_name, version="1.2.5", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.2.6", lifespan=lifespan)
 
 # 中间件注册顺序：后注册的在外层（先执行）。RequestLogMiddleware 放在最外以捕获所有请求。
 app.add_middleware(RequestLogMiddleware)
@@ -643,12 +666,6 @@ async def _global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 
-@app.get("/")
-def root():
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/api/health")
-
-
 @app.get("/api/health")
 def health_check():
     # [调整 2026-09-10] 健康检查文案改为引用 settings.app_name，避免品牌名硬编码
@@ -667,6 +684,52 @@ from app.services.branding_service import ensure_brand_dir as _ensure_brand_dir
 public_dir = os.path.join(str(DATA_ROOT), "public")
 _ensure_brand_dir()
 app.mount("/public", StaticFiles(directory=public_dir), name="public")
+
+
+# ── 前端页面托管（Docker 单容器部署） ────────────────────────────────
+# [新增 2026-09-22 / Docker] 镜像中前端构建产物位于 <项目根>/frontend/dist，
+# 与后端同源提供，好处是：
+#   - 同源 → 前端请求 /api、/uploads、/public 不涉及跨域，无需配置 CORS；
+#   - 单端口 → 只需暴露 5000，无需额外部署 Nginx 等静态服务器。
+# 未提供 dist 时（本地开发用 Vite 起前端、或纯后端部署）行为与改造前一致：
+# 根路径重定向到健康检查接口，故对既有部署方式零影响。
+#
+# 注册顺序要求：本挂载点必须放在所有 API 路由与 /uploads、/public 挂载之后，
+# 否则 "/" 会抢先匹配，导致接口与业务文件无法访问。
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+
+class SPAStaticFiles(StaticFiles):
+    """静态文件优先，未命中时回退到 index.html。
+
+    前端使用 BrowserRouter（history 模式），直接访问或刷新 /staff/list 这类子路由时
+    服务器上并不存在同名文件，必须回退 index.html 交由前端路由处理，否则刷新即 404。
+    """
+
+    async def get_response(self, path, scope):
+        # lookup_path 未命中时返回 (None, None)，据此判断是否需要回退，
+        # 避免依赖 Starlette 内部抛出的 404 异常类型（跨版本更稳）
+        _full_path, stat_result = self.lookup_path(path)
+        if stat_result is None:
+            # 接口与静态资源请求不做回退：若把「接口不存在」也返回 index.html，
+            # 调用方会拿到 200 + HTML，无法与正常业务响应区分。
+            if path.startswith("api/") or "." in path.rsplit("/", 1)[-1]:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            return await super().get_response("index.html", scope)
+        return await super().get_response(path, scope)
+
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/", SPAStaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+    logger.info(f"前端静态资源已挂载: {FRONTEND_DIST}")
+else:
+    # 无前端构建产物：保持原有行为（根路径跳转健康检查），" / " 路由在此注册
+    # 仍位于所有接口之后，不影响接口匹配
+    @app.get("/")
+    def root():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/api/health")
 
 
 

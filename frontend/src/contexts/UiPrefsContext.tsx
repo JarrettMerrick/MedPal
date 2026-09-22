@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Jiamin Zhang (zjm20@vip.qq.com)
+// Copyright (c) 2026 Jarrett Merrick Zhang (zjm20@vip.qq.com)
 // Licensed under the MIT License. See LICENSE file for details.
 
 /**
@@ -36,11 +36,20 @@ export type UiStyle = 'neu' | 'classic';
 export type ColorMode = 'light' | 'dark';
 
 const STORAGE_KEY_STYLE = 'medpal.ui.uiStyle';
-const STORAGE_KEY_COLOR = 'medpal.ui.colorMode';
+// [调整 2026-09-22] 明暗模式存储键升级为 v2。
+// 原因：旧版首访时会把「跟随系统深色偏好」得到的取值写入存储并长期保留，
+// 导致深色系统的浏览器即使改了默认值也仍停留在黑夜。升级键名做一次性归零，
+// 让所有浏览器都从新默认值（白天）起步；此后用户的手动切换仍照常记忆。
+const STORAGE_KEY_COLOR = 'medpal.ui.colorMode.v2';
 
-/** 默认外观风格：新拟物（本项目的目标视觉） */
+/** 默认外观风格：新拟物（用户菜单中显示为「时尚」，本项目的目标视觉） */
 export const DEFAULT_UI_STYLE: UiStyle = 'neu';
-/** 默认明暗模式：浅色（首次访问且系统无偏好时的兜底） */
+/**
+ * 默认明暗模式：白天（浅色）。
+ * [调整 2026-09-22] 不再跟随系统深色偏好：登录页以「时尚 + 白天」为主视觉，
+ * 跟随系统会让深色系统的用户第一眼看到深色登录页，与预期不符。
+ * 需要黑夜的用户可在用户菜单中自行切换，选择会被记忆。
+ */
 export const DEFAULT_COLOR_MODE: ColorMode = 'light';
 
 const UI_STYLES: readonly UiStyle[] = ['neu', 'classic'];
@@ -65,16 +74,6 @@ function readStored<T extends string>(
   return fallback;
 }
 
-/** 读取系统级明暗偏好（首次访问时作为默认值，尊重用户操作系统设置） */
-function detectSystemColorMode(): ColorMode {
-  try {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  } catch (err) {
-    console.warn('[UI 偏好] 无法读取系统明暗偏好，使用浅色:', err);
-    return DEFAULT_COLOR_MODE;
-  }
-}
-
 /**
  * 把偏好写入根元素属性。
  * 同时设置 color-scheme，让滚动条、原生表单控件、系统 UI 跟随明暗切换
@@ -88,8 +87,11 @@ export function applyUiPrefs(style: UiStyle, mode: ColorMode): void {
 }
 
 // ── 首屏防闪烁：模块加载即应用（早于 ReactDOM 渲染）────────────────
+// [调整 2026-09-22] 首访默认「时尚（neu）+ 白天（light）」：
+//   风格仍读用户已保存的选择；明暗的兜底值固定为 DEFAULT_COLOR_MODE（白天），
+//   不再取系统深色偏好 —— 未做过切换的用户（含所有首次访问者）一律白天。
 const initialStyle = readStored(STORAGE_KEY_STYLE, UI_STYLES, DEFAULT_UI_STYLE);
-const initialColor = readStored(STORAGE_KEY_COLOR, COLOR_MODES, detectSystemColorMode());
+const initialColor = readStored(STORAGE_KEY_COLOR, COLOR_MODES, DEFAULT_COLOR_MODE);
 applyUiPrefs(initialStyle, initialColor);
 
 interface UiPrefsValue {
