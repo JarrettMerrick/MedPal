@@ -26,6 +26,8 @@
 
 from datetime import timedelta
 import io
+# [修复 2026-09-22] RFC 5987 的 filename* 必须做百分号编码（见导出接口）
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -253,10 +255,15 @@ def export_system_logs(
     buf.seek(0)
     # [统一时间口径] 文件名时间戳统一用北京时间（原为 datetime.now()，取的是服务器本地时区）
     filename = f"系统日志_{to_beijing_str(utc_now(), '%Y%m%d_%H%M%S')}.xlsx"
+    # [修复 2026-09-22] filename* 的值必须是**百分号编码后的 ASCII**（RFC 5987）。
+    # 原实现直接把中文文件名塞进响应头，而 Starlette 构造响应头时按 latin-1 编码，
+    # 中文无法编码 → 抛 UnicodeEncodeError → 该接口必然 500（前端只看到"导出失败"）。
+    # 全项目其余下载接口（data_io / signage_export / signage_repairs / design_files）
+    # 均使用 quote() 编码，此处的缺失属遗漏；日志文件名固定含中文，故为必现故障。
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 
